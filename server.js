@@ -49,7 +49,7 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-app.options("*", cors(corsOptions)); // preflight aynı seçeneklerle
+app.options(/.*/, cors(corsOptions)); // preflight aynı seçeneklerle
 
 // ===== Body parser & basit logger =====
 app.use(express.json({ limit: "10mb" }));
