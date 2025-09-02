@@ -1,53 +1,51 @@
-// routes/users.js  — tek PG pool + şema garantisi + sağlamlaştırmalar
+// routes/users.js — tek PG pool + şema garantisi + education-list endpointleri
 const express = require("express");
 const { pool } = require("../db");
-const { verifyToken } = require("../middleware/auth");
+// ❗ default export olduğu için destructuring YAPMA
+const verifyToken = require("../middleware/auth");
 
 const router = express.Router();
 
 /* ---------------------- ŞEMA GARANTİSİ (bir kez çalışır) ---------------------- */
 async function ensureUserTables() {
-  // users
   await pool.query(`
     CREATE TABLE IF NOT EXISTS public.users (
       id SERIAL PRIMARY KEY,
-      full_name    TEXT NOT NULL,
-      role         TEXT,
-      work_area    TEXT,
-      authority    TEXT,
-      username     TEXT UNIQUE NOT NULL,
-      email        TEXT UNIQUE NOT NULL,
+      full_name      TEXT NOT NULL,
+      role           TEXT,
+      work_area      TEXT,
+      authority      TEXT,
+      username       TEXT UNIQUE NOT NULL,
+      email          TEXT UNIQUE NOT NULL,
       password_plain TEXT,
-      tags         TEXT[],
-      school       TEXT,
-      department   TEXT,
+      tags           TEXT[],
+      school         TEXT,
+      department     TEXT,
       watched_videos INTEGER[] DEFAULT '{}'::INTEGER[]
     );
   `);
 
-  // kullanıcı-video izleme kayıtları
   await pool.query(`
     CREATE TABLE IF NOT EXISTS public.user_video_views (
       id SERIAL PRIMARY KEY,
-      user_id INTEGER REFERENCES public.users(id)   ON DELETE CASCADE,
-      video_id INTEGER REFERENCES public.videos(id) ON DELETE CASCADE,
+      user_id  INTEGER REFERENCES public.users(id)   ON DELETE CASCADE,
+      video_id INTEGER REFERENCES public.videos(id)  ON DELETE CASCADE,
       watched_at TIMESTAMPTZ DEFAULT now(),
       UNIQUE (user_id, video_id)
     );
   `);
 
-  // çoklu eğitim kayıtları
   await pool.query(`
     CREATE TABLE IF NOT EXISTS public.user_education (
       id SERIAL PRIMARY KEY,
-      user_id INTEGER REFERENCES public.users(id) ON DELETE CASCADE,
-      school TEXT,
+      user_id    INTEGER REFERENCES public.users(id) ON DELETE CASCADE,
+      school     TEXT,
       department TEXT,
       created_at TIMESTAMPTZ DEFAULT now()
     );
   `);
 
-  console.log("✅ users/user_video_views/user_education tabloları hazır");
+  console.log("✅ users / user_video_views / user_education tabloları hazır");
 }
 ensureUserTables().catch((e) => console.error("ensureUserTables error:", e));
 
@@ -55,10 +53,7 @@ ensureUserTables().catch((e) => console.error("ensureUserTables error:", e));
 function normalizeTags(tags) {
   if (Array.isArray(tags)) return tags.map((t) => String(t).trim()).filter(Boolean);
   if (typeof tags === "string") {
-    return tags
-      .split(",")
-      .map((t) => t.trim())
-      .filter(Boolean);
+    return tags.split(",").map((t) => t.trim()).filter(Boolean);
   }
   return [];
 }
@@ -69,16 +64,8 @@ function normalizeTags(tags) {
 router.post("/", async (req, res) => {
   try {
     const {
-      fullName,
-      role,
-      workArea,
-      authority,
-      username,
-      email,
-      password, // not: prod'da hash'leyin
-      tags = [],
-      school = null,
-      department = null,
+      fullName, role, workArea, authority, username, email, password,
+      tags = [], school = null, department = null,
     } = req.body || {};
 
     if (!fullName || !role || !workArea || !authority || !username || !email || !password) {
@@ -93,16 +80,12 @@ router.post("/", async (req, res) => {
       return res.status(409).json({ error: "Bu kullanıcı adı veya e-posta zaten kayıtlı" });
     }
 
-    const tagsArr = normalizeTags(tags);
-
     const result = await pool.query(
       `INSERT INTO public.users
          (full_name, role, work_area, authority, username, email, password_plain, tags, school, department)
-       VALUES
-         ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-       RETURNING
-         id, full_name, role, work_area, authority, username, email, password_plain, tags, school, department`,
-      [fullName, role, workArea, authority, username, email, password, tagsArr, school, department]
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       RETURNING id, full_name, role, work_area, authority, username, email, password_plain, tags, school, department`,
+      [fullName, role, workArea, authority, username, email, password, normalizeTags(tags), school, department]
     );
 
     const u = result.rows[0];
@@ -128,7 +111,7 @@ router.post("/", async (req, res) => {
 /* ------------------------------------------------------------------ */
 /* 📌 Kullanıcıları listeleme                                          */
 /* ------------------------------------------------------------------ */
-router.get("/", async (req, res) => {
+router.get("/", async (_req, res) => {
   try {
     const result = await pool.query(`
       SELECT id, full_name, role, work_area, authority, username, email, password_plain, tags, school, department
@@ -136,21 +119,19 @@ router.get("/", async (req, res) => {
        ORDER BY id ASC
     `);
 
-    res.json(
-      result.rows.map((u) => ({
-        id: u.id,
-        fullName: u.full_name,
-        role: u.role,
-        workArea: u.work_area,
-        authority: u.authority,
-        username: u.username,
-        email: u.email,
-        password: u.password_plain,
-        tags: Array.isArray(u.tags) ? u.tags : [],
-        school: u.school || "",
-        department: u.department || "",
-      }))
-    );
+    res.json(result.rows.map((u) => ({
+      id: u.id,
+      fullName: u.full_name,
+      role: u.role,
+      workArea: u.work_area,
+      authority: u.authority,
+      username: u.username,
+      email: u.email,
+      password: u.password_plain,
+      tags: Array.isArray(u.tags) ? u.tags : [],
+      school: u.school || "",
+      department: u.department || "",
+    })));
   } catch (err) {
     console.error("🚨 Kullanıcıları çekerken hata:", err);
     res.status(500).json({ error: "Kullanıcılar alınamadı" });
@@ -171,7 +152,7 @@ router.delete("/:username", async (req, res) => {
 });
 
 /* ------------------------------------------------------------------ */
-/* 🆕 Eğitim Bilgisi (Okulu/Bölüm)                                     */
+/* 🆕 Tekil eğitim bilgisi (users tablosundaki sütunlar)                */
 /* ------------------------------------------------------------------ */
 router.get("/:id/education", verifyToken, async (req, res) => {
   const userId = parseInt(req.params.id, 10);
@@ -207,6 +188,68 @@ router.patch("/:id/education", verifyToken, async (req, res) => {
 });
 
 /* ------------------------------------------------------------------ */
+/* 🆕 Çoklu eğitim bilgisi (education-list)                             */
+/* ------------------------------------------------------------------ */
+router.get("/:id/education-list", verifyToken, async (req, res) => {
+  const userId = parseInt(req.params.id, 10);
+  if (req.user.userId !== userId) return res.status(403).json({ error: "Erişim reddedildi" });
+
+  try {
+    const q = `SELECT id, school, department, created_at
+               FROM public.user_education
+               WHERE user_id = $1
+               ORDER BY created_at DESC, id DESC`;
+    const { rows } = await pool.query(q, [userId]);
+    res.json({ entries: rows });
+  } catch (err) {
+    console.error("🚨 education-list GET hatası:", err);
+    res.status(500).json({ error: "Eğitim bilgileri alınamadı" });
+  }
+});
+
+router.put("/:id/education-list", verifyToken, async (req, res) => {
+  const userId = parseInt(req.params.id, 10);
+  if (req.user.userId !== userId) return res.status(403).json({ error: "Erişim reddedildi" });
+
+  const { entries } = req.body || {};
+  if (!Array.isArray(entries)) return res.status(400).json({ error: "entries array olmalı" });
+
+  const clean = entries
+    .map(e => ({ school: String(e.school || "").trim(), department: String(e.department || "").trim() }))
+    .filter(e => e.school && e.department);
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(`DELETE FROM public.user_education WHERE user_id = $1`, [userId]);
+
+    for (const e of clean) {
+      await client.query(
+        `INSERT INTO public.user_education (user_id, school, department) VALUES ($1, $2, $3)`,
+        [userId, e.school, e.department]
+      );
+    }
+
+    await client.query("COMMIT");
+
+    const r = await pool.query(
+      `SELECT id, school, department, created_at
+         FROM public.user_education
+        WHERE user_id = $1
+        ORDER BY created_at DESC, id DESC`,
+      [userId]
+    );
+    res.json({ message: "Eğitim bilgileri kaydedildi", entries: r.rows });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("🚨 education-list PUT hatası:", err);
+    res.status(500).json({ error: "Eğitim bilgileri kaydedilemedi" });
+  } finally {
+    client.release();
+  }
+});
+
+/* ------------------------------------------------------------------ */
 /* 📌 İzlenen video (users.watched_videos alanı)                       */
 /* ------------------------------------------------------------------ */
 router.patch("/:id/watched", verifyToken, async (req, res) => {
@@ -216,8 +259,8 @@ router.patch("/:id/watched", verifyToken, async (req, res) => {
   if (req.user.userId !== userId) return res.status(403).json({ error: "Erişim reddedildi" });
 
   try {
-    const userResult = await pool.query(`SELECT watched_videos FROM public.users WHERE id = $1`, [userId]);
-    const current = Array.isArray(userResult.rows[0]?.watched_videos) ? userResult.rows[0].watched_videos : [];
+    const r = await pool.query(`SELECT watched_videos FROM public.users WHERE id = $1`, [userId]);
+    const current = Array.isArray(r.rows[0]?.watched_videos) ? r.rows[0].watched_videos : [];
     if (current.includes(vidId)) return res.json({ watchedVideos: current });
 
     const updated = [...current, vidId];
@@ -234,9 +277,9 @@ router.get("/:id/watched", verifyToken, async (req, res) => {
   if (req.user.userId !== userId) return res.status(403).json({ error: "Erişim reddedildi" });
 
   try {
-    const result = await pool.query(`SELECT watched_videos FROM public.users WHERE id = $1`, [userId]);
-    if (result.rowCount === 0) return res.status(404).json({ error: "Kullanıcı bulunamadı" });
-    res.json({ watchedVideos: Array.isArray(result.rows[0].watched_videos) ? result.rows[0].watched_videos : [] });
+    const r = await pool.query(`SELECT watched_videos FROM public.users WHERE id = $1`, [userId]);
+    if (r.rowCount === 0) return res.status(404).json({ error: "Kullanıcı bulunamadı" });
+    res.json({ watchedVideos: Array.isArray(r.rows[0].watched_videos) ? r.rows[0].watched_videos : [] });
   } catch (err) {
     console.error("🚨 İzlenen videoları alırken hata:", err);
     res.status(500).json({ error: "İzlenen videolar alınamadı" });
@@ -276,17 +319,15 @@ router.get("/:id/watched-videos", verifyToken, async (req, res) => {
   if (req.user.userId !== userId) return res.status(403).json({ error: "Erişim reddedildi" });
 
   try {
-    const result = await pool.query(
-      `
-      SELECT v.id, v.title, v.url, v.description
-        FROM public.user_video_views uv
-        JOIN public.videos v ON uv.video_id = v.id
-       WHERE uv.user_id = $1
-       ORDER BY uv.watched_at DESC
-      `,
+    const r = await pool.query(
+      `SELECT v.id, v.title, v.url, v.description
+         FROM public.user_video_views uv
+         JOIN public.videos v ON uv.video_id = v.id
+        WHERE uv.user_id = $1
+        ORDER BY uv.watched_at DESC`,
       [userId]
     );
-    res.json({ watchedVideos: result.rows });
+    res.json({ watchedVideos: r.rows });
   } catch (err) {
     console.error("🚨 İzlenen videoları getirirken hata:", err);
     res.status(500).json({ error: "Veri alınamadı" });
@@ -301,9 +342,9 @@ router.get("/:id/work-area", verifyToken, async (req, res) => {
   if (req.user.userId !== userId) return res.status(403).json({ error: "Erişim reddedildi" });
 
   try {
-    const result = await pool.query(`SELECT work_area FROM public.users WHERE id = $1`, [userId]);
-    if (result.rowCount === 0) return res.status(404).json({ error: "Kullanıcı bulunamadı" });
-    res.json({ workArea: result.rows[0].work_area });
+    const r = await pool.query(`SELECT work_area FROM public.users WHERE id = $1`, [userId]);
+    if (r.rowCount === 0) return res.status(404).json({ error: "Kullanıcı bulunamadı" });
+    res.json({ workArea: r.rows[0].work_area });
   } catch (err) {
     console.error("🚨 workArea çekilirken hata:", err);
     res.status(500).json({ error: "Work area alınamadı" });
@@ -339,20 +380,18 @@ router.get("/:id/trainings", verifyToken, async (req, res) => {
         ? tags.replace(/[{}"\\]/g, "").split(",").map((t) => t.trim()).filter(Boolean)
         : [];
 
-    const data = rows.map((r) => ({
-      id: r.id,
-      title: r.title,
-      tags: format(r.tags),
-      score: r.score === null ? null : Number(r.score),
-    }));
-
-    res.json({ trainings: data });
+    res.json({
+      trainings: rows.map((r) => ({
+        id: r.id,
+        title: r.title,
+        tags: format(r.tags),
+        score: r.score === null ? null : Number(r.score),
+      })),
+    });
   } catch (err) {
     console.error("🚨 /:id/trainings hatası:", err);
     res.status(500).json({ error: "Eğitimler getirilemedi" });
   }
 });
-
-/* ------------------------------------------------------------------ */
 
 module.exports = router;
