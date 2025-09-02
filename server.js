@@ -20,46 +20,51 @@ const { ping } = require("./db");
 const app = express();
 app.set("trust proxy", 1);
 
-// server.js (üst kısım)
+/* ===================== CORS ===================== */
 const allowedOrigins = [
-  "http://akademi.urtimakademi.com",  // HTTP (senin siten)
-  "https://akademi.urtimakademi.com", // varsa HTTPS varyantı
+  "http://akademi.urtimakademi.com",
+  "https://akademi.urtimakademi.com",
   "http://localhost:5173",
   "http://localhost:5000",
   "https://urtimakademi.com",
   "https://www.urtimakademi.com",
   "https://urtimakademi.com.tr",
   "https://www.urtimakademi.com.tr",
-  "https://urtim-server.onrender.com",
+  "https://urtim-server.onrender.com", // sadece test için
 ];
 const defaultAllowed = allowedOrigins;
 
 const envList = (process.env.CLIENT_ORIGINS || "")
-  .split(",").map(s => s.trim()).filter(Boolean);
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 
 const allowList = envList.length ? envList : defaultAllowed;
 
 const corsOptions = {
   origin(origin, cb) {
-    // bazı istekler origin'siz gelebilir (curl, healthcheck vs.)
+    // bazı istekler origin'siz gelir (healthcheck, curl…)
     if (!origin) return cb(null, true);
-    cb(null, allowList.includes(origin));
+    return cb(null, allowList.includes(origin));
   },
   credentials: true,
-  methods: ["GET","POST","PUT","DELETE","PATCH","OPTIONS"],
+  methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
 };
 
+/* CORS: tüm /api isteklerinde aktif */
 app.use("/api", cors(corsOptions));
-app.options("/api/:path(*)", cors(corsOptions), (_req, res) => res.sendStatus(204));
 
-// ===== Body parser & basit logger =====
+/* Express 5 uyumlu preflight catcher (catch-all) */
+app.options("/api/:path*", cors(corsOptions), (_req, res) => res.sendStatus(204));
+
+/* ===================== Body parser & logger ===================== */
 app.use(express.json({ limit: "10mb" }));
 app.use((req, _res, next) => {
   console.log(`➡️  ${req.method} ${req.originalUrl}`);
   next();
 });
 
-// ===== Uploads (Render free'de kalıcı değil) =====
+/* ===================== Uploads (Render free kalıcı değil) ===================== */
 const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(process.cwd(), "uploads");
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 app.use(
@@ -71,7 +76,7 @@ app.use(
   })
 );
 
-// ===== Healthchecks =====
+/* ===================== Healthchecks ===================== */
 app.get("/api/health", (_req, res) =>
   res.json({ ok: true, time: new Date().toISOString() })
 );
@@ -85,7 +90,7 @@ app.get("/api/db/ping", async (_req, res) => {
   }
 });
 
-// ===== Routers (/api altında) =====
+/* ===================== Routers (/api altında) ===================== */
 app.use("/api/auth", authRoutes);
 app.use("/api/users", usersRouter);
 app.use("/api/videos", videosRouter);
@@ -93,19 +98,16 @@ app.use("/api/exams", examsRouter);
 app.use("/api/video-exams", videoExamsRouter);
 app.use("/api/exam-results", examResultsRouter);
 
-// 404 (sadece /api için)
+/* 404 (sadece /api için) */
 app.use("/api", (_req, res) => res.status(404).json({ error: "Not found" }));
 
-// Genel hata yakalayıcı
+/* Genel hata yakalayıcı */
 app.use((err, _req, res, _next) => {
   console.error("Unhandled error:", err);
   res.status(500).json({ error: "Internal Server Error" });
 });
 
-// --- SPA fallback KAPALI ---
-// Frontend cPanel'de, burada SPA yok.
-
-// ===== Listen (TEK KEZ) =====
+/* ===================== Listen (tek kez) ===================== */
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`✅ Server ${PORT} portunda çalışıyor`);

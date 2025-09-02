@@ -1,6 +1,7 @@
 // routes/users.js — tek PG pool + şema garantisi + education-list endpointleri
 const express = require("express");
 const { pool } = require("../db");
+// auth.js named export kullanıyor:
 const { verifyToken } = require("../middleware/auth");
 
 const router = express.Router();
