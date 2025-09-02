@@ -31,9 +31,11 @@ const allowedOrigins = [
   "https://www.urtimakademi.com.tr",
   "https://urtim-server.onrender.com", // test
 ];
-// .env ile override: CLIENT_ORIGINS="https://a.com,https://b.com"
+
 const envList = (process.env.CLIENT_ORIGINS || "")
-  .split(",").map(s => s.trim()).filter(Boolean);
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 const ALLOW = new Set(envList.length ? envList : allowedOrigins);
 
 // her istekte CORS header’larını yaz
@@ -43,10 +45,19 @@ function addCorsHeaders(req, res, next) {
     res.setHeader("Access-Control-Allow-Origin", origin || "*");
     res.setHeader("Vary", "Origin");
     res.setHeader("Access-Control-Allow-Credentials", "true");
-    res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,PATCH,OPTIONS");
+    res.setHeader(
+      "Access-Control-Allow-Methods",
+      "GET,POST,PUT,DELETE,PATCH,OPTIONS"
+    );
     res.setHeader(
       "Access-Control-Allow-Headers",
-      req.headers["access-control-request-headers"] || "Content-Type, Authorization"
+      req.headers["access-control-request-headers"] ||
+        "Content-Type, Authorization, Range"
+    );
+    // stream ve range için gerekli response header’larını expose et
+    res.setHeader(
+      "Access-Control-Expose-Headers",
+      "Content-Range, Accept-Ranges"
     );
   }
   next();
@@ -114,7 +125,7 @@ app.use("/exams", examsRouter);
 app.use("/video-exams", videoExamsRouter);
 app.use("/exam-results", examResultsRouter);
 
-// 404’ler hep JSON
+// 404’ler hep JSON (ROUTERLARDAN SONRA!)
 app.use("/api", (_req, res) => res.status(404).json({ error: "Not found" }));
 app.use((_req, res) => res.status(404).json({ error: "Not found" }));
 

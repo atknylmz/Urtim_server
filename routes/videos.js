@@ -1,4 +1,5 @@
 // routes/videos.js — PostgreSQL BYTEA + Range streaming (Express 5 uyumlu)
+
 const express = require("express");
 const multer = require("multer");
 const { v4: uuidv4 } = require("uuid");
@@ -24,15 +25,16 @@ async function ensureVideosTable() {
       created_at  TIMESTAMPTZ DEFAULT now()
     );
   `);
-  await pool.query(`CREATE INDEX IF NOT EXISTS videos_created_at_idx ON public.videos (created_at DESC);`);
+  await pool.query(
+    `CREATE INDEX IF NOT EXISTS videos_created_at_idx ON public.videos (created_at DESC);`
+  );
 }
-ensureVideosTable().catch(e => console.error("videos ensure hata:", e));
+ensureVideosTable().catch((e) => console.error("videos ensure hata:", e));
 
 /* ============ Upload ayarları (BYTEA için RAM) ============ */
 const upload = multer({
   storage: multer.memoryStorage(),
-  // Admin videoları 50MB'ı aşabilir; 200MB daha makul (Render ram'i de göz önünde bulundur).
-  limits: { fileSize: 200 * 1024 * 1024 },
+  limits: { fileSize: 200 * 1024 * 1024 }, // 200MB
 });
 
 /* ============ URL üretimi ============ */
@@ -54,25 +56,24 @@ router.post("/", upload.array("file"), async (req, res, next) => {
     let tagsArray = Array.isArray(tags)
       ? tags
       : typeof tags === "string"
-      ? tags.split(",").map(t => t.trim()).filter(Boolean)
+      ? tags.split(",").map((t) => t.trim()).filter(Boolean)
       : [];
 
-    // "Grup > Etiket" normalizasyonu (opsiyonel)
-    const normalizedTags = tagsArray.map(t => {
-      const s = String(t).trim();
-      return group && s && !s.includes(">")
-        ? `${group} > ${s}`
-        : s;
-    }).filter(Boolean);
+    const normalizedTags = tagsArray
+      .map((t) => {
+        const s = String(t).trim();
+        return group && s && !s.includes(">") ? `${group} > ${s}` : s;
+      })
+      .filter(Boolean);
 
     await client.query("BEGIN");
 
     const saved = [];
     for (const f of req.files) {
-      const filename  = f.originalname || `upload-${uuidv4()}`;
-      const mimeType  = f.mimetype || mime.getType(filename) || "application/octet-stream";
+      const filename = f.originalname || `upload-${uuidv4()}`;
+      const mimeType = f.mimetype || mime.getType(filename) || "application/octet-stream";
       const sizeBytes = f.size;
-      const content   = f.buffer;
+      const content = f.buffer;
 
       const ins = await client.query(
         `INSERT INTO public.videos
@@ -114,13 +115,18 @@ router.get("/", async (req, res, next) => {
     );
 
     const b = baseUrl(req);
-    const fixed = rows.map(v => ({
+    const fixed = rows.map((v) => ({
       ...v,
       url: v.url || `${b}/api/videos/${v.id}/stream`,
       tags: Array.isArray(v.tags)
-        ? v.tags.map(t => String(t).trim())
+        ? v.tags.map((t) => String(t).trim())
         : typeof v.tags === "string"
-        ? v.tags.toString().replace(/[{}"\\]/g, "").split(",").map(t => t.trim()).filter(Boolean)
+        ? v.tags
+            .toString()
+            .replace(/[{}"\\]/g, "")
+            .split(",")
+            .map((t) => t.trim())
+            .filter(Boolean)
         : [],
     }));
 
@@ -147,8 +153,11 @@ router.get("/:id/stream", async (req, res, next) => {
       const v = rows[0];
       if (!v) return res.status(404).json({ error: "Video bulunamadı" });
 
+      const total = Number(v.total);
       res.setHeader("Content-Type", v.mime_type || "application/octet-stream");
-      res.setHeader("Content-Length", v.total);
+      res.setHeader("Content-Length", total);
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Range", `bytes 0-${total - 1}/${total}`);
       return res.end(v.content);
     }
 
@@ -157,7 +166,7 @@ router.get("/:id/stream", async (req, res, next) => {
     if (!m) return res.status(416).end();
 
     const start = parseInt(m[1], 10);
-    const end   = m[2] ? parseInt(m[2], 10) : null;
+    const end = m[2] ? parseInt(m[2], 10) : null;
 
     const { rows: meta } = await pool.query(
       `SELECT mime_type, octet_length(content) AS total
@@ -168,8 +177,8 @@ router.get("/:id/stream", async (req, res, next) => {
     const info = meta[0];
     if (!info) return res.status(404).json({ error: "Video bulunamadı" });
 
-    const total     = Number(info.total);
-    const realEnd   = end !== null ? Math.min(end, total - 1) : total - 1;
+    const total = Number(info.total);
+    const realEnd = end !== null ? Math.min(end, total - 1) : total - 1;
     const chunkSize = realEnd - start + 1;
 
     // BYTEA substring — 1-indexed

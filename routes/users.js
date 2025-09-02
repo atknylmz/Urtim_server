@@ -1,4 +1,5 @@
-// routes/users.js — tek PG pool + şema garantisi + education-list endpointleri
+// routes/users.js — tek PG pool + şema garantisi + education-list + watched
+
 const express = require("express");
 const { pool } = require("../db");
 const { verifyToken } = require("../middleware/auth");
@@ -237,7 +238,7 @@ router.put("/:id/education-list", verifyToken, async (req, res) => {
   }
 });
 
-/* ----------- İzlenenler (alan + keşif) ----------- */
+/* ----------- İzlenenler (alan + log) — PATCH (mevcut) ----------- */
 router.patch("/:id/watched", verifyToken, async (req, res) => {
   const userId = parseInt(req.params.id, 10);
   const vidId = Number(req.body?.videoId);
@@ -255,6 +256,61 @@ router.patch("/:id/watched", verifyToken, async (req, res) => {
   } catch (err) {
     console.error("🚨 İzlenen video güncelleme hatası:", err);
     res.status(500).json({ error: "Güncellenemedi" });
+  }
+});
+
+/* ----------- İzleme kaydı (tek POST, idempotent) ----------- */
+router.post("/:id/watched", verifyToken, async (req, res) => {
+  const userId = parseInt(req.params.id, 10);
+  const vidId  = Number(req.body?.videoId);
+  if (!Number.isFinite(vidId)) return res.status(400).json({ error: "videoId gerekli" });
+  if (req.user.userId !== userId) return res.status(403).json({ error: "Erişim reddedildi" });
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    // users.watched_videos (idempotent)
+    const cur = await client.query(
+      `SELECT watched_videos FROM public.users WHERE id = $1 FOR UPDATE`,
+      [userId]
+    );
+    if (cur.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Kullanıcı bulunamadı" });
+    }
+    const arr = Array.isArray(cur.rows[0].watched_videos) ? cur.rows[0].watched_videos : [];
+    if (!arr.includes(vidId)) {
+      await client.query(
+        `UPDATE public.users SET watched_videos = $1 WHERE id = $2`,
+        [[...arr, vidId], userId]
+      );
+    }
+
+    // log tablosu (idempotent)
+    await client.query(
+      `INSERT INTO public.user_video_views (user_id, video_id)
+       VALUES ($1, $2)
+       ON CONFLICT (user_id, video_id) DO NOTHING`,
+      [userId, vidId]
+    );
+
+    await client.query("COMMIT");
+
+    const out = await pool.query(
+      `SELECT watched_videos FROM public.users WHERE id = $1`,
+      [userId]
+    );
+    return res.status(201).json({
+      message: "İzleme bilgisi kaydedildi",
+      watchedVideos: Array.isArray(out.rows[0]?.watched_videos) ? out.rows[0].watched_videos : []
+    });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("🚨 İzleme kaydı hatası:", err);
+    res.status(500).json({ error: "Kayıt başarısız" });
+  } finally {
+    client.release();
   }
 });
 
