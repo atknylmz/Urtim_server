@@ -1,132 +1,150 @@
-// routes/exams.js
+// routes/exams.js — tek PG pool + şema garantisi + güvenli validasyon
 const express = require("express");
-const { Pool } = require("pg");
+const { pool } = require("../db");
+// istersen korumalı yap: const { verifyToken, requireAuthority } = require("../middleware/auth");
 
 const router = express.Router();
-const pool = new Pool({
-  host: "192.168.0.220",
-  port: 5433,
-  user: "postgres",
-  password: "123",
-  database: "postgres",
-});
 
-// 📌 Sınav ekleme + soruları ekleme + videoya SINAVLI tag ekleme
+/* ---------------------- ŞEMA GARANTİSİ ---------------------- */
+async function ensureExamTables() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS public.exams (
+      id SERIAL PRIMARY KEY,
+      video_id   INTEGER REFERENCES public.videos(id) ON DELETE CASCADE,
+      exam_title TEXT NOT NULL,
+      author     TEXT,
+      tag        TEXT,
+      department TEXT,
+      created_at TIMESTAMPTZ DEFAULT now()
+    );
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS public.questions (
+      id SERIAL PRIMARY KEY,
+      exam_id       INTEGER REFERENCES public.exams(id) ON DELETE CASCADE,
+      question_text TEXT NOT NULL,
+      answer_text   TEXT,
+      image_url     TEXT
+    );
+  `);
+
+  await pool.query(`CREATE INDEX IF NOT EXISTS exams_video_id_idx    ON public.exams(video_id);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS questions_exam_id_idx ON public.questions(exam_id);`);
+
+  console.log("✅ exams & questions tabloları hazır");
+}
+ensureExamTables().catch(e => console.error("ensureExamTables error:", e));
+
+/* ---------------- Sınav + sorular ekle (+ videoya SINAVLI etiketi) ---------------- */
+// router.post("/", verifyToken, requireAuthority("admin"), async (req, res) => {
 router.post("/", async (req, res) => {
-  let { videoId, examTitle, author, tag, department, questions } = req.body;
+  let { videoId, examTitle, author, tag, department, questions } = req.body || {};
 
-  // Gelen videoId integer mı kontrol et
-  if (!Number.isInteger(videoId)) {
-    const parsedId = parseInt(videoId, 10);
-    if (isNaN(parsedId)) {
-      return res.status(400).json({ error: "Geçersiz videoId (integer olmalı)" });
-    }
-    videoId = parsedId;
+  // videoId -> integer
+  const vId = Number.parseInt(videoId, 10);
+  if (!Number.isFinite(vId)) {
+    return res.status(400).json({ error: "Geçersiz videoId (integer olmalı)" });
   }
 
-  // Sorular JSON string olarak gelmişse parse et
+  // questions parse
   if (typeof questions === "string") {
-    try {
-      questions = JSON.parse(questions);
-    } catch {
-      return res.status(400).json({ error: "Sorular geçerli JSON formatında değil" });
-    }
+    try { questions = JSON.parse(questions); }
+    catch { return res.status(400).json({ error: "Sorular geçerli JSON değil" }); }
+  }
+  if (!Array.isArray(questions) || questions.length === 0) {
+    return res.status(400).json({ error: "Sorular boş olamaz" });
   }
 
-  // Boş alan kontrolü
-  if (!videoId || !examTitle || !author || !tag || !department || !Array.isArray(questions) || !questions.length) {
-    return res.status(400).json({ error: "Eksik veri gönderildi" });
+  if (!examTitle || !author || !tag || !department) {
+    return res.status(400).json({ error: "Eksik alanlar var (examTitle/author/tag/department)" });
   }
 
   const client = await pool.connect();
-
   try {
     await client.query("BEGIN");
 
-    // 1️⃣ exams tablosuna ekle
-    const examResult = await client.query(
-      `INSERT INTO exams (video_id, exam_title, author, tag, department) 
-       VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-      [videoId, examTitle, author, tag, department]
+    // 1) exams
+    const examIns = await client.query(
+      `INSERT INTO public.exams (video_id, exam_title, author, tag, department)
+       VALUES ($1,$2,$3,$4,$5)
+       RETURNING id`,
+      [vId, String(examTitle).trim(), String(author).trim(), String(tag).trim(), String(department).trim()]
     );
-    const examId = examResult.rows[0].id;
+    const examId = examIns.rows[0].id;
 
-    // 2️⃣ questions tablosuna ekle
+    // 2) questions
     for (const q of questions) {
       await client.query(
-        `INSERT INTO questions (exam_id, question_text, answer_text, image_url) 
-         VALUES ($1, $2, $3, $4)`,
-        [examId, q.q || "", q.a || "", q.image || null]
+        `INSERT INTO public.questions (exam_id, question_text, answer_text, image_url)
+         VALUES ($1,$2,$3,$4)`,
+        [
+          examId,
+          (q?.q ?? q?.question_text ?? "").toString(),
+          (q?.a ?? q?.answer_text ?? "").toString(),
+          q?.image ?? q?.image_url ?? null,
+        ]
       );
     }
 
-    // 3️⃣ Videonun tags alanına SINAVLI ekle (duplicate olmadan)
-    await client.query(
-      `UPDATE videos
-       SET tags = (
-         SELECT ARRAY(
-           SELECT DISTINCT t
-           FROM unnest(
-             COALESCE(tags, '{}') || ARRAY['SINAVLI']
-           ) AS t
+    // 3) videonun tags'ine "SINAVLI" ekle (duplicate olmadan)
+    await client.query(`
+      UPDATE public.videos
+         SET tags = (
+           SELECT ARRAY(
+             SELECT DISTINCT t
+               FROM unnest(COALESCE(tags, '{}') || ARRAY['SINAVLI']) AS t
+           )
          )
-       )
-       WHERE id = $1`,
-      [videoId]
-    );
+       WHERE id = $1;
+    `, [vId]);
 
     await client.query("COMMIT");
-
-    res.status(201).json({ 
-      message: "Sınav, sorular ve video tag güncellendi", 
-      examId 
-    });
-
+    return res.status(201).json({ success: true, examId });
   } catch (err) {
     await client.query("ROLLBACK");
-    console.error("❌ Sınav ekleme hatası:", err);
-    res.status(500).json({ error: "Sunucu hatası" });
+    console.error("🚨 Sınav ekleme hatası:", err);
+    return res.status(500).json({ error: "Sunucu hatası" });
   } finally {
     client.release();
   }
 });
 
-// 📌 Belirli bir video ID'ye ait sınav ve soruları çek
+/* ---------------- Belirli videoId'nin sınavını getir (+ sorular) ---------------- */
 router.get("/:videoId", async (req, res) => {
-  const { videoId } = req.params;
+  const vId = Number.parseInt(req.params.videoId, 10);
+  if (!Number.isFinite(vId)) return res.status(400).json({ error: "Geçersiz videoId" });
 
   try {
-    // 1️⃣ Sınav bilgilerini çek
     const examRes = await pool.query(
-      "SELECT * FROM exams WHERE video_id = $1 LIMIT 1",
-      [videoId]
+      `SELECT id, exam_title, author, tag, department
+         FROM public.exams
+        WHERE video_id = $1
+        ORDER BY id DESC
+        LIMIT 1`,
+      [vId]
     );
-
-    if (examRes.rows.length === 0) {
-      return res.status(404).json({ error: "Bu videoya ait sınav bulunamadı" });
-    }
+    if (examRes.rowCount === 0) return res.status(404).json({ error: "Bu videoya ait sınav bulunamadı" });
 
     const exam = examRes.rows[0];
-
-    // 2️⃣ Soruları çek
-    const questionsRes = await pool.query(
+    const qsRes = await pool.query(
       `SELECT question_text AS q, answer_text AS a, image_url AS image
-       FROM questions
-       WHERE exam_id = $1`,
+         FROM public.questions
+        WHERE exam_id = $1
+        ORDER BY id ASC`,
       [exam.id]
     );
 
-    res.json({
+    return res.json({
       examTitle: exam.exam_title,
       author: exam.author,
       tag: exam.tag,
       department: exam.department,
-      questions: questionsRes.rows
+      questions: qsRes.rows,
     });
-
   } catch (err) {
-    console.error("❌ Sınav çekme hatası:", err);
-    res.status(500).json({ error: "Sunucu hatası" });
+    console.error("🚨 Sınav çekme hatası:", err);
+    return res.status(500).json({ error: "Sunucu hatası" });
   }
 });
 

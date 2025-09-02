@@ -1,36 +1,36 @@
 // routes/auth.js
 const express = require("express");
-const { Pool } = require("pg");
 const jwt = require("jsonwebtoken");
+const { pool } = require("../db");            // ← tek havuz buradan
 require("dotenv").config();
 
-const {
-  PGHOST, PGPORT, PGUSER, PGPASSWORD, PGDATABASE,
-  JWT_SECRET, JWT_EXPIRES = "1d"
-} = process.env;
-
-if (!JWT_SECRET) throw new Error("Missing JWT_SECRET env");
-
 const router = express.Router();
-const pool = new Pool({
-  host: PGHOST, port: Number(PGPORT), user: PGUSER, password: PGPASSWORD, database: PGDATABASE
-});
+const { JWT_SECRET, JWT_EXPIRES = "1d" } = process.env;
+if (!JWT_SECRET) throw new Error("Missing JWT_SECRET env");
 
 router.post("/login", async (req, res) => {
   const { email, password, role } = req.body || {};
-  if (!email || !password) return res.status(400).json({ error: "Lütfen e-posta ve şifre alanlarını doldurun" });
+  if (!email || !password) {
+    return res.status(400).json({ error: "Lütfen e-posta ve şifre alanlarını doldurun" });
+  }
 
   try {
     const normalizedEmail = String(email).trim().toLowerCase();
     const { rows } = await pool.query(
       `SELECT id, username, email, authority, full_name, role, work_area, password_plain
-       FROM users WHERE LOWER(email) = $1 LIMIT 1`,
+         FROM users
+        WHERE LOWER(email) = $1
+        LIMIT 1`,
       [normalizedEmail]
     );
     if (rows.length === 0) return res.status(404).json({ error: "Böyle bir kullanıcı bulunamadı" });
 
     const user = rows[0];
-    if (user.password_plain !== password) return res.status(401).json({ error: "Yanlış şifre" });
+
+    // TODO: prod'da bcrypt'e geçin. Şimdilik plain kıyas:
+    if (user.password_plain !== password) {
+      return res.status(401).json({ error: "Yanlış şifre" });
+    }
 
     if (role === "admin" && user.authority !== "admin") {
       return res.status(403).json({ error: "Bu hesaba admin panel erişimi yetkisi verilmemiş" });

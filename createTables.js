@@ -1,63 +1,163 @@
-const { Client } = require('pg');
+// createTable.js — tek pool ile idempotent şema kurulumu / yükseltme
+require("dotenv").config();
 
-const client = new Client({
-  host: "192.168.0.220",
-  port: 5433,
-  user: "postgres",
-  password: "123",
-  database: "postgres"
-});
+// KÖKTEYSE:
+const { pool } = require("./db");
+// scripts/ altında ise yukarıyı kapatıp şunu aç:
+// const { pool } = require("../db");
 
-const createTables = async () => {
-  try {
-    await client.connect();
-    console.log("✅ PostgreSQL'e bağlandı.");
+async function main() {
+  console.log("⏳ DB init/upgrade başlıyor...");
 
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS users (
-        id SERIAL PRIMARY KEY,
-        full_name VARCHAR(255) NOT NULL,
-        role VARCHAR(255) NOT NULL,
-        work_area VARCHAR(255) NOT NULL,
-        authority VARCHAR(50) NOT NULL,
-        username VARCHAR(100) UNIQUE NOT NULL,
-        password_hash TEXT NOT NULL
-      );
+  /* USERS */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS public.users (
+      id SERIAL PRIMARY KEY,
+      full_name      TEXT NOT NULL,
+      role           TEXT,
+      work_area      TEXT,
+      authority      TEXT,
+      username       TEXT UNIQUE NOT NULL,
+      email          TEXT UNIQUE,
+      password_plain TEXT,
+      tags           TEXT[],
+      school         TEXT,
+      department     TEXT,
+      watched_videos INTEGER[] DEFAULT '{}'::INTEGER[]
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS users_email_lower_idx ON public.users (lower(email));`);
 
-      CREATE TABLE IF NOT EXISTS videos (
-        id SERIAL PRIMARY KEY,
-        title VARCHAR(255),
-        description TEXT,
-        tags TEXT[],
-        uploader VARCHAR(255),
-        file_path TEXT NOT NULL
-      );
+  /* VIDEOS (BYTEA içerik + stream URL) */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS public.videos (
+      id          SERIAL PRIMARY KEY,
+      title       TEXT NOT NULL,
+      description TEXT,
+      uploader    TEXT,
+      tags        TEXT[],
+      filename    TEXT,
+      mime_type   TEXT,
+      size_bytes  INTEGER,
+      content     BYTEA,
+      url         TEXT,
+      created_at  TIMESTAMPTZ DEFAULT now()
+    );
+  `);
 
-      CREATE TABLE IF NOT EXISTS exams (
-        id SERIAL PRIMARY KEY,
-        video_id INT REFERENCES videos(id) ON DELETE CASCADE,
-        exam_title VARCHAR(255) NOT NULL,
-        author VARCHAR(255) NOT NULL,
-        tag VARCHAR(255),
-        department VARCHAR(255)
-      );
+  // Eski şemadan gelen sütunları (ör. file_path NOT NULL) tolere et
+  await pool.query(`
+    ALTER TABLE IF EXISTS public.videos
+      ADD COLUMN IF NOT EXISTS filename   TEXT,
+      ADD COLUMN IF NOT EXISTS mime_type  TEXT,
+      ADD COLUMN IF NOT EXISTS size_bytes INTEGER,
+      ADD COLUMN IF NOT EXISTS content    BYTEA,
+      ADD COLUMN IF NOT EXISTS url        TEXT,
+      ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
+  `);
 
-      CREATE TABLE IF NOT EXISTS questions (
-        id SERIAL PRIMARY KEY,
-        exam_id INT REFERENCES exams(id) ON DELETE CASCADE,
-        question_text TEXT NOT NULL,
-        answer_text TEXT NOT NULL,
-        image_url TEXT
-      );
-    `);
+  // Varsa eski file_path sütunundaki NOT NULL zorlamasını kaldır (varsa!)
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+          FROM information_schema.columns
+         WHERE table_schema='public' AND table_name='videos' AND column_name='file_path'
+      ) THEN
+        BEGIN
+          ALTER TABLE public.videos ALTER COLUMN file_path DROP NOT NULL;
+        EXCEPTION WHEN undefined_column THEN
+          -- yoksa sorun yok
+          NULL;
+        END;
+      END IF;
+    END$$;
+  `);
 
-    console.log("✅ Tablolar başarıyla oluşturuldu.");
-  } catch (err) {
-    console.error("❌ Hata:", err);
-  } finally {
-    await client.end();
-    console.log("🔌 Bağlantı kapatıldı.");
-  }
-};
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_indexes
+         WHERE schemaname='public' AND indexname='videos_created_at_idx'
+      ) THEN
+        CREATE INDEX videos_created_at_idx ON public.videos (created_at DESC);
+      END IF;
+    END$$;
+  `);
 
-createTables();
+  /* EXAMS */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS public.exams (
+      id SERIAL PRIMARY KEY,
+      video_id   INTEGER REFERENCES public.videos(id) ON DELETE CASCADE,
+      exam_title TEXT NOT NULL,
+      author     TEXT,
+      tag        TEXT,
+      department TEXT,
+      created_at TIMESTAMPTZ DEFAULT now()
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS exams_video_id_idx ON public.exams (video_id);`);
+
+  /* QUESTIONS */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS public.questions (
+      id SERIAL PRIMARY KEY,
+      exam_id       INTEGER REFERENCES public.exams(id) ON DELETE CASCADE,
+      question_text TEXT NOT NULL,
+      answer_text   TEXT,
+      image_url     TEXT
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS questions_exam_id_idx ON public.questions (exam_id);`);
+
+  /* EXAM_RESULTS */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS public.exam_results (
+      id          SERIAL PRIMARY KEY,
+      "user"      TEXT NOT NULL,
+      video_id    INTEGER REFERENCES public.videos(id) ON DELETE CASCADE,
+      exam_title  TEXT,
+      score       NUMERIC,
+      created_at  TIMESTAMPTZ DEFAULT now()
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS exam_results_user_lower_idx ON public.exam_results (lower("user"));`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS exam_results_video_id_idx    ON public.exam_results (video_id);`);
+
+  /* USER_VIDEO_VIEWS */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS public.user_video_views (
+      id SERIAL PRIMARY KEY,
+      user_id   INTEGER REFERENCES public.users(id)  ON DELETE CASCADE,
+      video_id  INTEGER REFERENCES public.videos(id) ON DELETE CASCADE,
+      watched_at TIMESTAMPTZ DEFAULT now(),
+      UNIQUE (user_id, video_id)
+    );
+  `);
+
+  /* USER_EDUCATION */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS public.user_education (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER REFERENCES public.users(id) ON DELETE CASCADE,
+      school TEXT,
+      department TEXT,
+      created_at TIMESTAMPTZ DEFAULT now()
+    );
+  `);
+
+  console.log("✅ DB init/upgrade tamam.");
+}
+
+main()
+  .catch((e) => {
+    console.error("❌ DB init hata:", e);
+    process.exitCode = 1;
+  })
+  .finally(async () => {
+    try { await pool.end(); } catch {}
+    console.log("🔌 bağlantı kapandı.");
+  });
