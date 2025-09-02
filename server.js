@@ -14,13 +14,13 @@ const videoExamsRouter = require("./routes/videoExams");
 const authRoutes = require("./routes/auth");
 const examResultsRouter = require("./routes/examResults");
 
-// DB ping (opsiyonel ama faydalı)
+// DB ping
 const { ping } = require("./db");
 
 const app = express();
 app.set("trust proxy", 1);
 
-/* ===================== CORS ===================== */
+/* ========== CORS ========== */
 const allowedOrigins = [
   "http://akademi.urtimakademi.com",
   "https://akademi.urtimakademi.com",
@@ -30,41 +30,57 @@ const allowedOrigins = [
   "https://www.urtimakademi.com",
   "https://urtimakademi.com.tr",
   "https://www.urtimakademi.com.tr",
-  "https://urtim-server.onrender.com", // sadece test için
+  "https://urtim-server.onrender.com", // test
 ];
 const defaultAllowed = allowedOrigins;
 
 const envList = (process.env.CLIENT_ORIGINS || "")
-  .split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
+  .split(",").map(s => s.trim()).filter(Boolean);
 
 const allowList = envList.length ? envList : defaultAllowed;
 
 const corsOptions = {
   origin(origin, cb) {
-    // bazı istekler origin'siz gelir (healthcheck, curl…)
+    // origin'siz istekleri (healthcheck, curl) engelleme
     if (!origin) return cb(null, true);
-    return cb(null, allowList.includes(origin));
+    cb(null, allowList.includes(origin));
   },
   credentials: true,
-  methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+  methods: ["GET","POST","PUT","DELETE","PATCH","OPTIONS"],
 };
 
-/* CORS: tüm /api isteklerinde aktif */
+// CORS'u /api altında etkinleştir
 app.use("/api", cors(corsOptions));
 
-/* Express 5 uyumlu preflight catcher (catch-all) */
-app.options("/api/:path*", cors(corsOptions), (_req, res) => res.sendStatus(204));
+/* PATHSİZ preflight yakalayıcı (Express 5 uyumlu, pattern YOK) */
+app.use((req, res, next) => {
+  if (req.method === "OPTIONS") {
+    // cors() headerları zaten ekledi; garanti olsun diye headerları tekrar set edelim
+    const origin = req.headers.origin;
+    if (!origin || allowList.includes(origin)) {
+      res.header("Access-Control-Allow-Origin", origin || "*");
+      res.header("Vary", "Origin");
+      res.header("Access-Control-Allow-Credentials", "true");
+      res.header("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,PATCH,OPTIONS");
+      res.header(
+        "Access-Control-Allow-Headers",
+        req.header("Access-Control-Request-Headers") || "Content-Type, Authorization"
+      );
+      return res.sendStatus(204);
+    }
+    return res.status(403).send("CORS not allowed for this origin");
+  }
+  next();
+});
 
-/* ===================== Body parser & logger ===================== */
+/* ========== Body parser & logger ========== */
 app.use(express.json({ limit: "10mb" }));
 app.use((req, _res, next) => {
   console.log(`➡️  ${req.method} ${req.originalUrl}`);
   next();
 });
 
-/* ===================== Uploads (Render free kalıcı değil) ===================== */
+/* ========== Uploads (Render free kalıcı değil) ========== */
 const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(process.cwd(), "uploads");
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 app.use(
@@ -76,7 +92,7 @@ app.use(
   })
 );
 
-/* ===================== Healthchecks ===================== */
+/* ========== Healthchecks ========== */
 app.get("/api/health", (_req, res) =>
   res.json({ ok: true, time: new Date().toISOString() })
 );
@@ -90,7 +106,7 @@ app.get("/api/db/ping", async (_req, res) => {
   }
 });
 
-/* ===================== Routers (/api altında) ===================== */
+/* ========== Routers (/api altında) ========== */
 app.use("/api/auth", authRoutes);
 app.use("/api/users", usersRouter);
 app.use("/api/videos", videosRouter);
@@ -107,7 +123,7 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ error: "Internal Server Error" });
 });
 
-/* ===================== Listen (tek kez) ===================== */
+/* ========== Listen ========== */
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`✅ Server ${PORT} portunda çalışıyor`);
