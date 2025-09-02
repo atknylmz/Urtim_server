@@ -1,29 +1,17 @@
-// routes/videos.js  — PostgreSQL BYTEA + Range streaming (düzeltilmiş)
+// routes/videos.js — PostgreSQL BYTEA + Range streaming (Express 5 uyumlu)
 const express = require("express");
 const multer = require("multer");
 const { v4: uuidv4 } = require("uuid");
-const mime = require("mime"); // mevcut projende bu paket var; istersen 'mime-types' da kullanılabilir
+const mime = require("mime");
 const { pool } = require("../db");
 
 const router = express.Router();
 
-/* Bellek tabanlı upload */
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 50 * 1024 * 1024 }, // ihtiyaca göre artır/azalt
-});
-
-/* Base URL üretimi */
-function baseUrl(req) {
-  return process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get("host")}`;
-}
-
-/* Tabloyu garanti et (ÖNCE CREATE, sonra ALTER/INDEX) */
+/* ============ Tabloyu garanti et (idempotent) ============ */
 async function ensureVideosTable() {
-  // 1) tablo yoksa oluştur
   await pool.query(`
     CREATE TABLE IF NOT EXISTS public.videos (
-      id          SERIAL PRIMARY KEY,
+      id SERIAL PRIMARY KEY,
       title       TEXT NOT NULL,
       description TEXT,
       uploader    TEXT,
@@ -36,60 +24,67 @@ async function ensureVideosTable() {
       created_at  TIMESTAMPTZ DEFAULT now()
     );
   `);
-
-  // 2) ileriye dönük ek kolonlar (güvenli)
-  await pool.query(`
-    ALTER TABLE public.videos
-      ADD COLUMN IF NOT EXISTS filename   TEXT,
-      ADD COLUMN IF NOT EXISTS mime_type  TEXT,
-      ADD COLUMN IF NOT EXISTS size_bytes INTEGER,
-      ADD COLUMN IF NOT EXISTS content    BYTEA,
-      ADD COLUMN IF NOT EXISTS url        TEXT;
-  `);
-
-  // 3) index
   await pool.query(`CREATE INDEX IF NOT EXISTS videos_created_at_idx ON public.videos (created_at DESC);`);
-
-  console.log("✅ videos tablosu ve kolonları hazır");
 }
-ensureVideosTable().catch((e) => console.error("videos ensure hata:", e));
+ensureVideosTable().catch(e => console.error("videos ensure hata:", e));
 
-/* ---- YÜKLE (çoklu dosya) ----
-   form-data: file (birden fazla), title, desc, uploader, tags ("a,b" ya da array), group (ops.)
+/* ============ Upload ayarları (BYTEA için RAM) ============ */
+const upload = multer({
+  storage: multer.memoryStorage(),
+  // Admin videoları 50MB'ı aşabilir; 200MB daha makul (Render ram'i de göz önünde bulundur).
+  limits: { fileSize: 200 * 1024 * 1024 },
+});
+
+/* ============ URL üretimi ============ */
+function baseUrl(req) {
+  return process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get("host")}`;
+}
+
+/* ============ YÜKLE (çoklu dosya) ============ 
+   form-data: file (multi), title, desc, uploader, tags ("a,b" veya array), group (opsiyonel)
 */
 router.post("/", upload.array("file"), async (req, res, next) => {
+  const client = await pool.connect();
   try {
     if (!req.files?.length) return res.status(400).json({ error: "Dosya yüklenmedi" });
 
-    const { title, desc, uploader, tags } = req.body;
+    const { title, desc, uploader, tags, group } = req.body || {};
     if (!title || !uploader) return res.status(400).json({ error: "Başlık ve yükleyici zorunlu" });
 
-    let tagsArray =
-      Array.isArray(tags) ? tags :
-      typeof tags === "string" ? tags.split(",").map((t) => t.trim()).filter(Boolean) : [];
+    let tagsArray = Array.isArray(tags)
+      ? tags
+      : typeof tags === "string"
+      ? tags.split(",").map(t => t.trim()).filter(Boolean)
+      : [];
 
-    if (req.body.group) {
-      tagsArray = tagsArray.map((t) => (t.includes(">") ? t : `${req.body.group} > ${t}`));
-    }
+    // "Grup > Etiket" normalizasyonu (opsiyonel)
+    const normalizedTags = tagsArray.map(t => {
+      const s = String(t).trim();
+      return group && s && !s.includes(">")
+        ? `${group} > ${s}`
+        : s;
+    }).filter(Boolean);
+
+    await client.query("BEGIN");
 
     const saved = [];
     for (const f of req.files) {
-      const filename = f.originalname || `upload-${uuidv4()}`;
-      const mimeType = f.mimetype || mime.getType?.(filename) || "application/octet-stream";
-      const sizeBytes = Number(f.size || 0);
-      const content = f.buffer;
+      const filename  = f.originalname || `upload-${uuidv4()}`;
+      const mimeType  = f.mimetype || mime.getType(filename) || "application/octet-stream";
+      const sizeBytes = f.size;
+      const content   = f.buffer;
 
-      const ins = await pool.query(
-        `INSERT INTO public.videos (title, description, uploader, tags, filename, mime_type, size_bytes, content)
+      const ins = await client.query(
+        `INSERT INTO public.videos
+          (title, description, uploader, tags, filename, mime_type, size_bytes, content)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
          RETURNING id, title, description, uploader, tags, filename, mime_type, size_bytes, created_at`,
-        [title, desc || null, uploader, tagsArray, filename, mimeType, sizeBytes, content]
+        [title, desc || null, uploader, normalizedTags, filename, mimeType, sizeBytes, content]
       );
 
       const row = ins.rows[0];
       const url = `${baseUrl(req)}/api/videos/${row.id}/stream`;
-
-      await pool.query(`UPDATE public.videos SET url = $1 WHERE id = $2`, [url, row.id]);
+      await client.query(`UPDATE public.videos SET url = $1 WHERE id = $2`, [url, row.id]);
 
       saved.push({
         ...row,
@@ -98,14 +93,18 @@ router.post("/", upload.array("file"), async (req, res, next) => {
       });
     }
 
+    await client.query("COMMIT");
     res.status(201).json(saved);
   } catch (e) {
+    await client.query("ROLLBACK");
     console.error("Video yükleme hatası:", e);
     next(e);
+  } finally {
+    client.release();
   }
 });
 
-/* ---- LİSTE ---- */
+/* ============ LİSTE ============ */
 router.get("/", async (req, res, next) => {
   try {
     const { rows } = await pool.query(
@@ -115,13 +114,13 @@ router.get("/", async (req, res, next) => {
     );
 
     const b = baseUrl(req);
-    const fixed = rows.map((v) => ({
+    const fixed = rows.map(v => ({
       ...v,
       url: v.url || `${b}/api/videos/${v.id}/stream`,
       tags: Array.isArray(v.tags)
-        ? v.tags.map((t) => String(t).trim())
+        ? v.tags.map(t => String(t).trim())
         : typeof v.tags === "string"
-        ? v.tags.toString().replace(/[{}"\\]/g, "").split(",").map((t) => t.trim()).filter(Boolean)
+        ? v.tags.toString().replace(/[{}"\\]/g, "").split(",").map(t => t.trim()).filter(Boolean)
         : [],
     }));
 
@@ -132,7 +131,7 @@ router.get("/", async (req, res, next) => {
   }
 });
 
-/* ---- STREAM (Range destekli) ---- */
+/* ============ STREAM (Range destekli) ============ */
 router.get("/:id/stream", async (req, res, next) => {
   try {
     const range = req.headers.range;
@@ -148,9 +147,8 @@ router.get("/:id/stream", async (req, res, next) => {
       const v = rows[0];
       if (!v) return res.status(404).json({ error: "Video bulunamadı" });
 
-      const total = Number(v.total || 0);
       res.setHeader("Content-Type", v.mime_type || "application/octet-stream");
-      res.setHeader("Content-Length", total);
+      res.setHeader("Content-Length", v.total);
       return res.end(v.content);
     }
 
@@ -159,9 +157,8 @@ router.get("/:id/stream", async (req, res, next) => {
     if (!m) return res.status(416).end();
 
     const start = parseInt(m[1], 10);
-    const end = m[2] ? parseInt(m[2], 10) : null;
+    const end   = m[2] ? parseInt(m[2], 10) : null;
 
-    // toplam boy
     const { rows: meta } = await pool.query(
       `SELECT mime_type, octet_length(content) AS total
          FROM public.videos
@@ -171,11 +168,11 @@ router.get("/:id/stream", async (req, res, next) => {
     const info = meta[0];
     if (!info) return res.status(404).json({ error: "Video bulunamadı" });
 
-    const total = Number(info.total);
-    const realEnd = end !== null ? Math.min(end, total - 1) : total - 1;
+    const total     = Number(info.total);
+    const realEnd   = end !== null ? Math.min(end, total - 1) : total - 1;
     const chunkSize = realEnd - start + 1;
 
-    // BYTEA 1-indexed; substring(from start+1 for length)
+    // BYTEA substring — 1-indexed
     const { rows } = await pool.query(
       `SELECT substring(content from $2 for $3) AS chunk
          FROM public.videos
@@ -196,13 +193,10 @@ router.get("/:id/stream", async (req, res, next) => {
   }
 });
 
-/* ---- SİL ---- */
+/* ============ SİL ============ */
 router.delete("/:id", async (req, res, next) => {
   try {
-    const r = await pool.query(
-      `DELETE FROM public.videos WHERE id = $1 RETURNING id`,
-      [req.params.id]
-    );
+    const r = await pool.query(`DELETE FROM public.videos WHERE id = $1 RETURNING id`, [req.params.id]);
     if (!r.rowCount) return res.status(404).json({ error: "Video bulunamadı" });
     res.json({ ok: true });
   } catch (e) {

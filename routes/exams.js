@@ -1,7 +1,6 @@
-// routes/exams.js — tek PG pool + şema garantisi + güvenli validasyon
+// routes/exams.js — tek PG pool + şema garantisi + validasyon
 const express = require("express");
 const { pool } = require("../db");
-// istersen korumalı yap: const { verifyToken, requireAuthority } = require("../middleware/auth");
 
 const router = express.Router();
 
@@ -36,18 +35,15 @@ async function ensureExamTables() {
 }
 ensureExamTables().catch(e => console.error("ensureExamTables error:", e));
 
-/* ---------------- Sınav + sorular ekle (+ videoya SINAVLI etiketi) ---------------- */
-// router.post("/", verifyToken, requireAuthority("admin"), async (req, res) => {
+/* ---------------- Sınav + sorular ekle ---------------- */
 router.post("/", async (req, res) => {
   let { videoId, examTitle, author, tag, department, questions } = req.body || {};
 
-  // videoId -> integer
   const vId = Number.parseInt(videoId, 10);
   if (!Number.isFinite(vId)) {
     return res.status(400).json({ error: "Geçersiz videoId (integer olmalı)" });
   }
 
-  // questions parse
   if (typeof questions === "string") {
     try { questions = JSON.parse(questions); }
     catch { return res.status(400).json({ error: "Sorular geçerli JSON değil" }); }
@@ -64,7 +60,6 @@ router.post("/", async (req, res) => {
   try {
     await client.query("BEGIN");
 
-    // 1) exams
     const examIns = await client.query(
       `INSERT INTO public.exams (video_id, exam_title, author, tag, department)
        VALUES ($1,$2,$3,$4,$5)
@@ -73,7 +68,6 @@ router.post("/", async (req, res) => {
     );
     const examId = examIns.rows[0].id;
 
-    // 2) questions
     for (const q of questions) {
       await client.query(
         `INSERT INTO public.questions (exam_id, question_text, answer_text, image_url)
@@ -87,13 +81,12 @@ router.post("/", async (req, res) => {
       );
     }
 
-    // 3) videonun tags'ine "SINAVLI" ekle (duplicate olmadan)
+    // videonun tags'ine "SINAVLI" ekle (duplicate olmadan)
     await client.query(`
       UPDATE public.videos
          SET tags = (
            SELECT ARRAY(
-             SELECT DISTINCT t
-               FROM unnest(COALESCE(tags, '{}') || ARRAY['SINAVLI']) AS t
+             SELECT DISTINCT t FROM unnest(COALESCE(tags, '{}') || ARRAY['SINAVLI']) AS t
            )
          )
        WHERE id = $1;
@@ -110,7 +103,7 @@ router.post("/", async (req, res) => {
   }
 });
 
-/* ---------------- Belirli videoId'nin sınavını getir (+ sorular) ---------------- */
+/* ---------------- Belirli videoId'nin sınavını getir ---------------- */
 router.get("/:videoId", async (req, res) => {
   const vId = Number.parseInt(req.params.videoId, 10);
   if (!Number.isFinite(vId)) return res.status(400).json({ error: "Geçersiz videoId" });

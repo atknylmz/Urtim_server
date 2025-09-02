@@ -1,10 +1,10 @@
-// routes/examResults.js — tek PG pool + şema garantisi + case-insensitive kullanıcı sorgusu
+// routes/examResults.js — tek PG pool + şema garantisi
 const express = require("express");
 const { pool } = require("../db");
 
 const router = express.Router();
 
-/* ---------------------- ŞEMA GARANTİSİ (bir kez çalışır) ---------------------- */
+/* ---------------------- ŞEMA GARANTİSİ ---------------------- */
 async function ensureExamResultsTable() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS public.exam_results (
@@ -16,20 +16,16 @@ async function ensureExamResultsTable() {
       created_at  TIMESTAMPTZ DEFAULT now()
     );
   `);
-  // Performans için indeksler
   await pool.query(`CREATE INDEX IF NOT EXISTS exam_results_user_lower_idx ON public.exam_results (lower("user"));`);
   await pool.query(`CREATE INDEX IF NOT EXISTS exam_results_video_id_idx    ON public.exam_results (video_id);`);
   console.log("✅ exam_results tablosu hazır");
 }
 ensureExamResultsTable().catch((e) => console.error("ensureExamResultsTable error:", e));
 
-/* ------------------------------------------------------------------ */
-/* 📌 Sınav sonucu kaydet                                             */
-/* ------------------------------------------------------------------ */
+/* ---------------- Sınav sonucu kaydet ---------------- */
 router.post("/", async (req, res) => {
   let { videoId, score, examTitle, userName } = req.body || {};
 
-  // Validasyon
   const vId = Number.parseInt(videoId, 10);
   const sVal = Number(score);
   if (!Number.isFinite(vId) || !Number.isFinite(sVal) || !examTitle || !String(userName || "").trim()) {
@@ -56,10 +52,7 @@ router.post("/", async (req, res) => {
   }
 });
 
-/* ------------------------------------------------------------------ */
-/* 📌 Kullanıcıya göre (Ad Soyad) her video için EN YÜKSEK skor       */
-/*    Case-insensitive eşleşme (lower(user) = lower($1))              */
-/* ------------------------------------------------------------------ */
+/* ---------------- Kullanıcıya göre en yüksek skorlar ---------------- */
 router.get("/user/:userName", async (req, res) => {
   const userName = decodeURIComponent(req.params.userName || "").trim();
   if (!userName) return res.status(400).json({ error: "userName gerekli" });
@@ -73,7 +66,7 @@ router.get("/user/:userName", async (req, res) => {
        ORDER BY video_id;
     `;
     const { rows } = await pool.query(q, [userName]);
-    return res.json({ results: rows }); // [{ video_id, score }]
+    return res.json({ results: rows });
   } catch (err) {
     console.error("❌ exam-results GET hatası:", err);
     return res.status(500).json({ error: "Sunucu hatası" });

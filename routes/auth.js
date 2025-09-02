@@ -1,8 +1,7 @@
 // routes/auth.js
 const express = require("express");
 const jwt = require("jsonwebtoken");
-const { pool } = require("../db");            // ← tek havuz buradan
-require("dotenv").config();
+const { pool } = require("../db");
 
 const router = express.Router();
 const { JWT_SECRET, JWT_EXPIRES = "1d" } = process.env;
@@ -18,7 +17,7 @@ router.post("/login", async (req, res) => {
     const normalizedEmail = String(email).trim().toLowerCase();
     const { rows } = await pool.query(
       `SELECT id, username, email, authority, full_name, role, work_area, password_plain
-         FROM users
+         FROM public.users
         WHERE LOWER(email) = $1
         LIMIT 1`,
       [normalizedEmail]
@@ -27,7 +26,7 @@ router.post("/login", async (req, res) => {
 
     const user = rows[0];
 
-    // TODO: prod'da bcrypt'e geçin. Şimdilik plain kıyas:
+    // NOT: prod'da bcrypt kullanın (hashlenmemiş şifre test amaçlı).
     if (user.password_plain !== password) {
       return res.status(401).json({ error: "Yanlış şifre" });
     }
