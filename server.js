@@ -1,4 +1,4 @@
-// server.js (API-only, Express 5 uyumlu — custom CORS, kesin çözüm)
+// server.js (API-only, Express 5 uyumlu — custom CORS)
 
 require("dotenv").config();
 const express = require("express");
@@ -19,7 +19,7 @@ const { ping } = require("./db");
 const app = express();
 app.set("trust proxy", 1);
 
-/* ===================== CORS (custom, paket yok) ===================== */
+/* ===================== CORS (custom) ===================== */
 const allowedOrigins = [
   "http://akademi.urtimakademi.com",
   "https://akademi.urtimakademi.com",
@@ -31,56 +31,47 @@ const allowedOrigins = [
   "https://www.urtimakademi.com.tr",
   "https://urtim-server.onrender.com", // test
 ];
-
 // .env ile override: CLIENT_ORIGINS="https://a.com,https://b.com"
 const envList = (process.env.CLIENT_ORIGINS || "")
-  .split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
-
+  .split(",").map(s => s.trim()).filter(Boolean);
 const ALLOW = new Set(envList.length ? envList : allowedOrigins);
 
-/** her istekte CORS header'larını ekle (origin uygunsa) */
+// her istekte CORS header’larını yaz
 function addCorsHeaders(req, res, next) {
   const origin = req.headers.origin;
   if (!origin || ALLOW.has(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin || "*");
     res.setHeader("Vary", "Origin");
     res.setHeader("Access-Control-Allow-Credentials", "true");
-    res.setHeader(
-      "Access-Control-Allow-Methods",
-      "GET,POST,PUT,DELETE,PATCH,OPTIONS"
-    );
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,PATCH,OPTIONS");
     res.setHeader(
       "Access-Control-Allow-Headers",
-      req.headers["access-control-request-headers"] ||
-        "Content-Type, Authorization"
+      req.headers["access-control-request-headers"] || "Content-Type, Authorization"
     );
   }
-  return next();
+  next();
 }
 
-/** OPTIONS'ları *önce* yakala: 204 + CORS header */
+// OPTIONS preflight’ı kısa devre et (pattern kullanma!)
 function handlePreflight(req, res, next) {
   if (req.method === "OPTIONS") {
     console.log("🔁 PREFLIGHT", req.headers.origin || "-", req.originalUrl);
     return res.sendStatus(204);
   }
-  return next();
+  next();
 }
 
-// !!! SIRA ÖNEMLİ: önce header, sonra preflight !!!
 app.use(addCorsHeaders);
 app.use(handlePreflight);
 
-/* ===================== Body parser & logger ===================== */
+/* ===================== Parsers & logger ===================== */
 app.use(express.json({ limit: "10mb" }));
 app.use((req, _res, next) => {
   console.log(`➡️  ${req.method} ${req.originalUrl}`);
   next();
 });
 
-/* ===================== Uploads (Render free kalıcı değil) ===================== */
+/* ===================== Uploads (ephemeral) ===================== */
 const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(process.cwd(), "uploads");
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 app.use(
@@ -92,7 +83,7 @@ app.use(
   })
 );
 
-/* ===================== Healthchecks ===================== */
+/* ===================== Health ===================== */
 app.get("/api/health", (_req, res) =>
   res.json({ ok: true, time: new Date().toISOString() })
 );
@@ -107,7 +98,7 @@ app.get("/api/db/ping", async (_req, res) => {
 });
 
 /* ===================== Routers ===================== */
-/* Asıl mount noktaları (/api/...) */
+// asıl mount
 app.use("/api/auth", authRoutes);
 app.use("/api/users", usersRouter);
 app.use("/api/videos", videosRouter);
@@ -115,7 +106,7 @@ app.use("/api/exams", examsRouter);
 app.use("/api/video-exams", videoExamsRouter);
 app.use("/api/exam-results", examResultsRouter);
 
-/* GERİYE DÖNÜK UYUMLULUK: admin tarafı relative path atarsa */
+// geriye dönük alias (relative URL kaçakları için)
 app.use("/auth", authRoutes);
 app.use("/users", usersRouter);
 app.use("/videos", videosRouter);
@@ -123,11 +114,11 @@ app.use("/exams", examsRouter);
 app.use("/video-exams", videoExamsRouter);
 app.use("/exam-results", examResultsRouter);
 
-/* 404 JSON — hem /api hem kök için */
+// 404’ler hep JSON
 app.use("/api", (_req, res) => res.status(404).json({ error: "Not found" }));
 app.use((_req, res) => res.status(404).json({ error: "Not found" }));
 
-/* Genel hata yakalayıcı (JSON) */
+// global error -> JSON
 app.use((err, _req, res, _next) => {
   console.error("Unhandled error:", err);
   res.status(500).json({ error: "Internal Server Error" });

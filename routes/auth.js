@@ -4,8 +4,10 @@ const jwt = require("jsonwebtoken");
 const { pool } = require("../db");
 
 const router = express.Router();
+// en üstte:
 const { JWT_SECRET, JWT_EXPIRES = "1d" } = process.env;
 if (!JWT_SECRET) throw new Error("Missing JWT_SECRET env");
+
 
 router.post("/login", async (req, res) => {
   const { email, password, role } = req.body || {};
