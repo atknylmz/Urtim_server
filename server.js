@@ -1,4 +1,4 @@
-// server.js (Render için API-only)
+// server.js (API-only, Express 5 uyumlu)
 
 require("dotenv").config();
 const express = require("express");
@@ -20,7 +20,7 @@ const { ping } = require("./db");
 const app = express();
 app.set("trust proxy", 1);
 
-/* ========== CORS ========== */
+/* ===================== CORS ===================== */
 const allowedOrigins = [
   "http://akademi.urtimakademi.com",
   "https://akademi.urtimakademi.com",
@@ -41,21 +41,19 @@ const allowList = envList.length ? envList : defaultAllowed;
 
 const corsOptions = {
   origin(origin, cb) {
-    // origin'siz istekleri (healthcheck, curl) engelleme
-    if (!origin) return cb(null, true);
+    if (!origin) return cb(null, true);         // healthcheck/curl
     cb(null, allowList.includes(origin));
   },
   credentials: true,
   methods: ["GET","POST","PUT","DELETE","PATCH","OPTIONS"],
 };
 
-// CORS'u /api altında etkinleştir
-app.use("/api", cors(corsOptions));
+// CORS'u TÜM pathlerde etkinleştir (sadece /api değil!)
+app.use(cors(corsOptions));
 
-/* PATHSİZ preflight yakalayıcı (Express 5 uyumlu, pattern YOK) */
+// OPTIONS preflight'ları path'siz yakala (Express 5 uyumlu; pattern yok)
 app.use((req, res, next) => {
   if (req.method === "OPTIONS") {
-    // cors() headerları zaten ekledi; garanti olsun diye headerları tekrar set edelim
     const origin = req.headers.origin;
     if (!origin || allowList.includes(origin)) {
       res.header("Access-Control-Allow-Origin", origin || "*");
@@ -73,14 +71,14 @@ app.use((req, res, next) => {
   next();
 });
 
-/* ========== Body parser & logger ========== */
+/* ===================== Body parser & logger ===================== */
 app.use(express.json({ limit: "10mb" }));
 app.use((req, _res, next) => {
   console.log(`➡️  ${req.method} ${req.originalUrl}`);
   next();
 });
 
-/* ========== Uploads (Render free kalıcı değil) ========== */
+/* ===================== Uploads (Render free kalıcı değil) ===================== */
 const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(process.cwd(), "uploads");
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 app.use(
@@ -92,7 +90,7 @@ app.use(
   })
 );
 
-/* ========== Healthchecks ========== */
+/* ===================== Healthchecks ===================== */
 app.get("/api/health", (_req, res) =>
   res.json({ ok: true, time: new Date().toISOString() })
 );
@@ -106,7 +104,8 @@ app.get("/api/db/ping", async (_req, res) => {
   }
 });
 
-/* ========== Routers (/api altında) ========== */
+/* ===================== Routers ===================== */
+/* Asıl mount noktaları (/api/...) */
 app.use("/api/auth", authRoutes);
 app.use("/api/users", usersRouter);
 app.use("/api/videos", videosRouter);
@@ -114,16 +113,26 @@ app.use("/api/exams", examsRouter);
 app.use("/api/video-exams", videoExamsRouter);
 app.use("/api/exam-results", examResultsRouter);
 
-/* 404 (sadece /api için) */
-app.use("/api", (_req, res) => res.status(404).json({ error: "Not found" }));
+/* GERİYE DÖNÜK UYUMLULUK (admin tarafı relative path kullanırsa) */
+/* /users, /videos, /exams ... isteklerini de kabul et */
+app.use("/auth", authRoutes);
+app.use("/users", usersRouter);
+app.use("/videos", videosRouter);
+app.use("/exams", examsRouter);
+app.use("/video-exams", videoExamsRouter);
+app.use("/exam-results", examResultsRouter);
 
-/* Genel hata yakalayıcı */
+/* 404 JSON — hem /api hem kök için */
+app.use("/api", (_req, res) => res.status(404).json({ error: "Not found" }));
+app.use((_req, res) => res.status(404).json({ error: "Not found" }));
+
+/* Genel hata yakalayıcı (JSON) */
 app.use((err, _req, res, _next) => {
   console.error("Unhandled error:", err);
   res.status(500).json({ error: "Internal Server Error" });
 });
 
-/* ========== Listen ========== */
+/* ===================== Listen ===================== */
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`✅ Server ${PORT} portunda çalışıyor`);
