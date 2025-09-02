@@ -21,17 +21,18 @@ const app = express();
 app.set("trust proxy", 1);
 
 // ===== CORS (routes'tan ÖNCE) =====
-const defaultAllowed = [
-  "http://localhost:5173",
-  "http://localhost:5000",
+const allowedOrigins = [
   "https://akademi.urtimakademi.com",
   "http://akademi.urtimakademi.com",
+  "http://localhost:5173",
+  "http://localhost:5000",
   "https://urtimakademi.com",
   "https://www.urtimakademi.com",
   "https://urtimakademi.com.tr",
   "https://www.urtimakademi.com.tr",
-  "https://api.urtimakademi.com",
+  "https://urtim-server.onrender.com", // sadece test için
 ];
+
 
 const envList = (process.env.CLIENT_ORIGINS || "")
   .split(",")
@@ -43,17 +44,21 @@ const allowList = envList.length ? envList : defaultAllowed;
 // ... CORS options
 const corsOptions = {
   origin(origin, cb) {
-    if (!origin) return cb(null, true);
-    cb(null, allowList.includes(origin));
+    if (!origin || allowList.includes(origin)) {
+      cb(null, true);
+    } else {
+      cb(new Error(`CORS not allowed for origin: ${origin}`));
+    }
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-  // ŞU SATIRI GENİŞLET ya da tamamen kaldır:
-  // allowedHeaders: ["Content-Type", "Authorization"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Access-Token", "x-access-token"],
+  // allowedHeaders: kaldırdık → otomatik izin verir
 };
+
 app.use(cors(corsOptions));
-app.options(/.*/, cors(corsOptions));
+// preflight (OPTIONS) için
+app.options("*", cors(corsOptions));
+
 
 
 // ===== Body parser & basit logger =====
