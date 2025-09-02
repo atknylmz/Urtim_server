@@ -40,18 +40,21 @@ const envList = (process.env.CLIENT_ORIGINS || "")
 
 const allowList = envList.length ? envList : defaultAllowed;
 
+// ... CORS options
 const corsOptions = {
   origin(origin, cb) {
-    if (!origin) return cb(null, true); // Postman vb.
+    if (!origin) return cb(null, true);
     cb(null, allowList.includes(origin));
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
+  // ŞU SATIRI GENİŞLET ya da tamamen kaldır:
+  // allowedHeaders: ["Content-Type", "Authorization"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Access-Token", "x-access-token"],
 };
-
 app.use(cors(corsOptions));
-app.options(/.*/, cors(corsOptions)); // preflight
+app.options(/.*/, cors(corsOptions));
+
 
 // ===== Body parser & basit logger =====
 app.use(express.json({ limit: "10mb" }));
