@@ -20,49 +20,37 @@ const { ping } = require("./db");
 const app = express();
 app.set("trust proxy", 1);
 
-// ===== CORS (routes'tan ÖNCE) =====
+// server.js (üst kısım)
 const allowedOrigins = [
-   "https://akademi.urtimakademi.com",
-   "http://akademi.urtimakademi.com",
-   "http://localhost:5173",
-   "http://localhost:5000",
-   "https://urtimakademi.com",
-   "https://www.urtimakademi.com",
-   "https://urtimakademi.com.tr",
-   "https://www.urtimakademi.com.tr",
-   "https://urtim-server.onrender.com", // sadece test için
- ];
-
+  "http://akademi.urtimakademi.com",  // HTTP (senin siten)
+  "https://akademi.urtimakademi.com", // varsa HTTPS varyantı
+  "http://localhost:5173",
+  "http://localhost:5000",
+  "https://urtimakademi.com",
+  "https://www.urtimakademi.com",
+  "https://urtimakademi.com.tr",
+  "https://www.urtimakademi.com.tr",
+  "https://urtim-server.onrender.com",
+];
 const defaultAllowed = allowedOrigins;
 
 const envList = (process.env.CLIENT_ORIGINS || "")
-   .split(",")
-   .map((s) => s.trim())
-   .filter(Boolean);
+  .split(",").map(s => s.trim()).filter(Boolean);
 
 const allowList = envList.length ? envList : defaultAllowed;
 
-// ... CORS options
 const corsOptions = {
   origin(origin, cb) {
-    if (!origin || allowList.includes(origin)) {
-      cb(null, true);
-    } else {
-      cb(new Error(`CORS not allowed for origin: ${origin}`));
-    }
+    // bazı istekler origin'siz gelebilir (curl, healthcheck vs.)
+    if (!origin) return cb(null, true);
+    cb(null, allowList.includes(origin));
   },
   credentials: true,
-  methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-  // allowedHeaders: kaldırdık → otomatik izin verir
+  methods: ["GET","POST","PUT","DELETE","PATCH","OPTIONS"],
 };
 
-app.use((req, res, next) => {
-   if (req.method === "OPTIONS") {
-     // cors() zaten header'ları ekledi; sadece 204 dönmek yeterli
-     return res.sendStatus(204);
-   }
-  next();
- });
+app.use("/api", cors(corsOptions));
+app.options("/api/:path(*)", cors(corsOptions), (_req, res) => res.sendStatus(204));
 
 // ===== Body parser & basit logger =====
 app.use(express.json({ limit: "10mb" }));
