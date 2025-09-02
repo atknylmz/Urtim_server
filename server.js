@@ -22,22 +22,23 @@ app.set("trust proxy", 1);
 
 // ===== CORS (routes'tan ÖNCE) =====
 const allowedOrigins = [
-  "https://akademi.urtimakademi.com",
-  "http://akademi.urtimakademi.com",
-  "http://localhost:5173",
-  "http://localhost:5000",
-  "https://urtimakademi.com",
-  "https://www.urtimakademi.com",
-  "https://urtimakademi.com.tr",
-  "https://www.urtimakademi.com.tr",
-  "https://urtim-server.onrender.com", // sadece test için
-];
+   "https://akademi.urtimakademi.com",
+   "http://akademi.urtimakademi.com",
+   "http://localhost:5173",
+   "http://localhost:5000",
+   "https://urtimakademi.com",
+   "https://www.urtimakademi.com",
+   "https://urtimakademi.com.tr",
+   "https://www.urtimakademi.com.tr",
+   "https://urtim-server.onrender.com", // sadece test için
+ ];
 
+const defaultAllowed = allowedOrigins;
 
 const envList = (process.env.CLIENT_ORIGINS || "")
-  .split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
+   .split(",")
+   .map((s) => s.trim())
+   .filter(Boolean);
 
 const allowList = envList.length ? envList : defaultAllowed;
 
@@ -57,9 +58,7 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 // preflight (OPTIONS) için
-app.options("*", cors(corsOptions));
-
-
+app.use(cors(corsOptions))
 
 // ===== Body parser & basit logger =====
 app.use(express.json({ limit: "10mb" }));

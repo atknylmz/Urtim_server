@@ -2,7 +2,7 @@
 const express = require("express");
 const { pool } = require("../db");
 // ❗ default export olduğu için destructuring YAPMA
-const { verifyToken } = require("../middleware/auth");
+const verifyToken = require("../middleware/auth");
 
 const router = express.Router();
 
