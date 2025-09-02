@@ -1,8 +1,7 @@
-// server.js (API-only, Express 5 uyumlu)
+// server.js (API-only, Express 5 uyumlu — custom CORS, kesin çözüm)
 
 require("dotenv").config();
 const express = require("express");
-const cors = require("cors");
 const path = require("path");
 const fs = require("fs");
 
@@ -20,7 +19,7 @@ const { ping } = require("./db");
 const app = express();
 app.set("trust proxy", 1);
 
-/* ===================== CORS ===================== */
+/* ===================== CORS (custom, paket yok) ===================== */
 const allowedOrigins = [
   "http://akademi.urtimakademi.com",
   "https://akademi.urtimakademi.com",
@@ -32,44 +31,47 @@ const allowedOrigins = [
   "https://www.urtimakademi.com.tr",
   "https://urtim-server.onrender.com", // test
 ];
-const defaultAllowed = allowedOrigins;
 
+// .env ile override: CLIENT_ORIGINS="https://a.com,https://b.com"
 const envList = (process.env.CLIENT_ORIGINS || "")
-  .split(",").map(s => s.trim()).filter(Boolean);
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 
-const allowList = envList.length ? envList : defaultAllowed;
+const ALLOW = new Set(envList.length ? envList : allowedOrigins);
 
-const corsOptions = {
-  origin(origin, cb) {
-    if (!origin) return cb(null, true);         // healthcheck/curl
-    cb(null, allowList.includes(origin));
-  },
-  credentials: true,
-  methods: ["GET","POST","PUT","DELETE","PATCH","OPTIONS"],
-};
-
-// CORS'u TÜM pathlerde etkinleştir (sadece /api değil!)
-app.use(cors(corsOptions));
-
-// OPTIONS preflight'ları path'siz yakala (Express 5 uyumlu; pattern yok)
-app.use((req, res, next) => {
-  if (req.method === "OPTIONS") {
-    const origin = req.headers.origin;
-    if (!origin || allowList.includes(origin)) {
-      res.header("Access-Control-Allow-Origin", origin || "*");
-      res.header("Vary", "Origin");
-      res.header("Access-Control-Allow-Credentials", "true");
-      res.header("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,PATCH,OPTIONS");
-      res.header(
-        "Access-Control-Allow-Headers",
-        req.header("Access-Control-Request-Headers") || "Content-Type, Authorization"
-      );
-      return res.sendStatus(204);
-    }
-    return res.status(403).send("CORS not allowed for this origin");
+/** her istekte CORS header'larını ekle (origin uygunsa) */
+function addCorsHeaders(req, res, next) {
+  const origin = req.headers.origin;
+  if (!origin || ALLOW.has(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin || "*");
+    res.setHeader("Vary", "Origin");
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+    res.setHeader(
+      "Access-Control-Allow-Methods",
+      "GET,POST,PUT,DELETE,PATCH,OPTIONS"
+    );
+    res.setHeader(
+      "Access-Control-Allow-Headers",
+      req.headers["access-control-request-headers"] ||
+        "Content-Type, Authorization"
+    );
   }
-  next();
-});
+  return next();
+}
+
+/** OPTIONS'ları *önce* yakala: 204 + CORS header */
+function handlePreflight(req, res, next) {
+  if (req.method === "OPTIONS") {
+    console.log("🔁 PREFLIGHT", req.headers.origin || "-", req.originalUrl);
+    return res.sendStatus(204);
+  }
+  return next();
+}
+
+// !!! SIRA ÖNEMLİ: önce header, sonra preflight !!!
+app.use(addCorsHeaders);
+app.use(handlePreflight);
 
 /* ===================== Body parser & logger ===================== */
 app.use(express.json({ limit: "10mb" }));
@@ -113,8 +115,7 @@ app.use("/api/exams", examsRouter);
 app.use("/api/video-exams", videoExamsRouter);
 app.use("/api/exam-results", examResultsRouter);
 
-/* GERİYE DÖNÜK UYUMLULUK (admin tarafı relative path kullanırsa) */
-/* /users, /videos, /exams ... isteklerini de kabul et */
+/* GERİYE DÖNÜK UYUMLULUK: admin tarafı relative path atarsa */
 app.use("/auth", authRoutes);
 app.use("/users", usersRouter);
 app.use("/videos", videosRouter);
@@ -136,5 +137,5 @@ app.use((err, _req, res, _next) => {
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`✅ Server ${PORT} portunda çalışıyor`);
-  console.log("🌐 CORS allowList:", allowList.join(", "));
+  console.log("🌐 CORS allowList:", [...ALLOW].join(", "));
 });
