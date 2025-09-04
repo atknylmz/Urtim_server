@@ -21,14 +21,18 @@ app.set("trust proxy", 1);
 
 /* ===================== CORS (custom) ===================== */
 const allowedOrigins = [
-  "http://akademi.urtimakademi.com",
-  "https://akademi.urtimakademi.com",
-  "http://localhost:5173",
-  "http://localhost:5000",
   "https://urtimakademi.com",
   "https://www.urtimakademi.com",
   "https://urtimakademi.com.tr",
   "https://www.urtimakademi.com.tr",
+  "http://urtimakademi.com",
+  "http://www.urtimakademi.com",
+  "http://urtimakademi.com.tr",
+  "http://www.urtimakademi.com.tr",
+  "http://akademi.urtimakademi.com",
+  "https://akademi.urtimakademi.com",
+  "http://localhost:5173",
+  "http://localhost:5000",
   "https://urtim-server.onrender.com", // test
 ];
 
