@@ -1,5 +1,5 @@
 // config.js
-require("dotenv").config();
+import 'dotenv/config';
 
 function must(name) {
   const v = process.env[name];
@@ -17,7 +17,7 @@ if (!hasDbUrl) {
   must("PGDATABASE");
 }
 
-module.exports = {
+const config = {
   NODE_ENV: process.env.NODE_ENV || "development",
   PORT: Number(process.env.PORT || 5000),
 
@@ -44,3 +44,5 @@ module.exports = {
   // (opsiyonel) upload klasörü kullanırsan
   UPLOAD_DIR: process.env.UPLOAD_DIR || null,
 };
+
+export default config;
