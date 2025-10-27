@@ -28,3 +28,13 @@ export const verifyToken = (req, res, next) => {
     return res.status(403).json({ error: "Yetkilendirme token'ı geçersiz." });
   }
 };
+
+export const verifyAdmin = (req, res, next) => {
+  verifyToken(req, res, () => {
+    if (req.user && req.user.authority === 'admin') {
+      next(); // Kullanıcı admin ise devam et
+    } else {
+      res.status(403).json({ error: "Erişim reddedildi. Admin yetkisi gerekli." });
+    }
+  });
+};
