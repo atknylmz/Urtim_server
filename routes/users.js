@@ -1,6 +1,7 @@
 // routes/users.js
 import express from 'express';
 import db from '../models/index.js';
+import { QueryTypes } from 'sequelize';
 import { verifyToken } from '../middleware/auth.js';
 
 const router = express.Router();
@@ -22,7 +23,7 @@ async function ensureUserTables() {
       department     TEXT,
       watched_videos INTEGER[] DEFAULT '{}'::INTEGER[]
     );
-  `); // No transaction needed for ensure tables
+  `);
   await db.sequelize.query(`CREATE UNIQUE INDEX IF NOT EXISTS users_username_unique ON public.users (username);`);
   await db.sequelize.query(`
     CREATE TABLE IF NOT EXISTS public.user_video_views (
@@ -32,8 +33,7 @@ async function ensureUserTables() {
       watched_at TIMESTAMPTZ DEFAULT now(),
       UNIQUE (user_id, video_id)
     );
-  `); // No transaction needed for ensure tables
-
+  `);
   await db.sequelize.query(`
     CREATE TABLE IF NOT EXISTS public.user_education (
       id SERIAL PRIMARY KEY,
@@ -43,7 +43,7 @@ async function ensureUserTables() {
       created_at TIMESTAMPTZ DEFAULT now()
     );
   `);
-  await db.sequelize.query(`CREATE INDEX IF NOT EXISTS users_email_lower_idx ON public.users (lower(email));`); // No transaction needed for ensure tables
+  await db.sequelize.query(`CREATE INDEX IF NOT EXISTS users_email_lower_idx ON public.users (lower(email));`);
   console.log("✅ users / user_video_views / user_education tabloları hazır");
 }
 ensureUserTables().catch((e) => console.error("ensureUserTables error:", e));
@@ -82,41 +82,42 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ error: "Eksik alanlar var" });
     }
 
-    const [existing] = await db.sequelize.query( // Sequelize query returns [results, metadata]
+    const existing = await db.sequelize.query(
       `SELECT 1 FROM public.users WHERE username = $1 OR email = $2`,
-      { bind: [username, email], type: db.sequelize.QueryTypes.SELECT }
+      { bind: [username, email], type: QueryTypes.SELECT }
     );
-    if (existing && existing.length > 0) {
+    if (existing.length > 0) {
       return res.status(409).json({ error: "Bu kullanıcı adı veya e-posta zaten kayıtlı" });
     }
 
-    const [result] = await db.sequelize.query( // Sequelize query returns [results, metadata]
+    const [rows] = await db.sequelize.query(
       `INSERT INTO public.users
          (full_name, role, work_area, authority, username, email, password_plain, tags, school, department)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-       RETURNING id, full_name, role, work_area, authority, username, email, password_plain, tags, school, department`, // Düzeltildi: type eklendi
-      [fullName, role, workArea, normAuth(authority), username, email, password, normalizeTags(tags), school, department]
+       RETURNING id, full_name, role, work_area, authority, username, email, password_plain, tags, school, department`,
+      { bind: [fullName, role, workArea, normAuth(authority), username, email, password, normalizeTags(tags), school, department] }
     );
 
-    res.status(201).json(camelize(result[0])); // result[0] contains the actual row data
+    return res.status(201).json(camelize(rows[0]));
   } catch (err) {
     console.error("🚨 Kullanıcı ekleme hatası:", err);
-    res.status(500).json({ error: "Kullanıcı eklenemedi", details: err.message });
+    return res.status(500).json({ error: "Kullanıcı eklenemedi", details: err.message });
   }
 });
 
 /* ---------------- Kullanıcıları listele ---------------- */
 router.get("/", async (_req, res) => {
   try {
-    const [results] = await db.sequelize.query(`
-      SELECT id, full_name, role, work_area, authority, username, email, password_plain, tags, school, department
-        FROM public.users
-       ORDER BY id ASC
-    `, { type: db.sequelize.QueryTypes.SELECT });
-    res.json(results.map(camelize)); // results is already an array of objects
+    const rows = await db.sequelize.query(
+      `SELECT id, full_name, role, work_area, authority, username, email, password_plain, tags, school, department
+         FROM public.users
+        ORDER BY id ASC`,
+      { type: QueryTypes.SELECT }
+    );
+    return res.json(rows.map(camelize));
   } catch (err) {
     console.error("🚨 Kullanıcıları çekerken hata:", err);
-    res.status(500).json({ error: "Kullanıcılar alınamadı" });
+    return res.status(500).json({ error: "Kullanıcılar alınamadı" });
   }
 });
 
@@ -131,18 +132,16 @@ router.put("/:id", async (req, res) => {
       school, department,
     } = req.body || {};
 
-    // benzersizlik kontrolü (kendi dışındakiler)
     if (username || email) {
-      const [r] = await db.sequelize.query( // Sequelize query returns [results, metadata]
+      const dup = await db.sequelize.query(
         `SELECT 1 FROM public.users WHERE (username = $1 OR email = $2) AND id <> $3`,
-        { bind: [username || null, email || null, id], type: db.sequelize.QueryTypes.SELECT } // Düzeltildi: type eklendi
+        { bind: [username || null, email || null, id], type: QueryTypes.SELECT }
       );
-      if (r && r.length > 0) {
+      if (dup.length > 0) {
         return res.status(409).json({ error: "Bu kullanıcı adı veya e-posta başka bir kullanıcıda mevcut" });
       }
     }
 
-    // dinamik SET listesi
     const fields = [];
     const values = [];
     let i = 1;
@@ -158,8 +157,7 @@ router.put("/:id", async (req, res) => {
     }
     if (school !== undefined)    { fields.push(`school = $${i++}`); values.push(school); }
     if (department !== undefined){ fields.push(`department = $${i++}`); values.push(department); }
-    // password boş/undefined ise dokunma
-    if (password) { fields.push(`password_plain = $${i++}`); values.push(password); }
+    if (password)                { fields.push(`password_plain = $${i++}`); values.push(password); }
 
     if (fields.length === 0) {
       return res.status(400).json({ error: "Güncellenecek alan yok" });
@@ -171,13 +169,14 @@ router.put("/:id", async (req, res) => {
          SET ${fields.join(", ")}
        WHERE id = $${i}
        RETURNING id, full_name, role, work_area, authority, username, email, password_plain, tags, school, department`;
-    const [updated] = await db.sequelize.query(q, { bind: values, type: db.sequelize.QueryTypes.UPDATE });
-    if (!updated || updated.length === 0) return res.status(404).json({ error: "Kullanıcı bulunamadı" });
 
-    res.json(camelize(updated[0]));
+    const [rows] = await db.sequelize.query(q, { bind: values });
+    if (!rows || rows.length === 0) return res.status(404).json({ error: "Kullanıcı bulunamadı" });
+
+    return res.json(camelize(rows[0]));
   } catch (err) {
     console.error("🚨 Kullanıcı güncelleme hatası:", err);
-    res.status(500).json({ error: "Kullanıcı güncellenemedi", details: err.message });
+    return res.status(500).json({ error: "Kullanıcı güncellenemedi", details: err.message });
   }
 });
 
@@ -187,18 +186,24 @@ router.delete("/:idOrUsername", async (req, res) => {
     const p = req.params.idOrUsername;
     const asNum = Number(p);
 
-    let r;
+    let rows;
     if (Number.isInteger(asNum)) {
-      [r] = await db.sequelize.query(`DELETE FROM public.users WHERE id = $1 RETURNING id`, { bind: [asNum], type: db.sequelize.QueryTypes.DELETE }); // Düzeltildi: type eklendi
+      [rows] = await db.sequelize.query(
+        `DELETE FROM public.users WHERE id = $1 RETURNING id`,
+        { bind: [asNum] }
+      );
     } else {
-      [r] = await db.sequelize.query(`DELETE FROM public.users WHERE username = $1 RETURNING id`, { bind: [p], type: db.sequelize.QueryTypes.DELETE }); // Düzeltildi: type eklendi
+      [rows] = await db.sequelize.query(
+        `DELETE FROM public.users WHERE username = $1 RETURNING id`,
+        { bind: [p] }
+      );
     }
 
-    if (!r || r.length === 0) return res.status(404).json({ error: "Kullanıcı bulunamadı" }); // r is the array of affected rows
-    res.json({ message: "Kullanıcı silindi" });
+    if (!rows || rows.length === 0) return res.status(404).json({ error: "Kullanıcı bulunamadı" });
+    return res.json({ message: "Kullanıcı silindi" });
   } catch (err) {
     console.error("🚨 Kullanıcı silme hatası:", err);
-    res.status(500).json({ error: "Kullanıcı silinemedi" });
+    return res.status(500).json({ error: "Kullanıcı silinemedi" });
   }
 });
 
@@ -208,12 +213,15 @@ router.get("/:id/education", verifyToken, async (req, res) => {
   if (req.user.userId !== userId) return res.status(403).json({ error: "Erişim reddedildi" });
 
   try {
-    const [r] = await db.sequelize.query(`SELECT school, department FROM public.users WHERE id = $1`, { bind: [userId], type: db.sequelize.QueryTypes.SELECT }); // Düzeltildi: type eklendi
-    if (r && r.length === 0) return res.status(404).json({ error: "Kullanıcı bulunamadı" });
-    res.json({ school: r[0].school || "", department: r[0].department || "" }); // r[0] is the actual row data
+    const rows = await db.sequelize.query(
+      `SELECT school, department FROM public.users WHERE id = $1`,
+      { bind: [userId], type: QueryTypes.SELECT }
+    );
+    if (rows.length === 0) return res.status(404).json({ error: "Kullanıcı bulunamadı" });
+    return res.json({ school: rows[0].school || "", department: rows[0].department || "" });
   } catch (err) {
     console.error("🚨 /education GET hatası:", err);
-    res.status(500).json({ error: "Eğitim bilgisi alınamadı" });
+    return res.status(500).json({ error: "Eğitim bilgisi alınamadı" });
   }
 });
 
@@ -223,16 +231,16 @@ router.patch("/:id/education", verifyToken, async (req, res) => {
 
   const { school = "", department = "" } = req.body || {};
   try {
-    const [r] = await db.sequelize.query(
+    const [rows] = await db.sequelize.query(
       `UPDATE public.users SET school = $1, department = $2 WHERE id = $3
        RETURNING id, school, department`,
-      { bind: [school, department, userId], type: db.sequelize.QueryTypes.UPDATE }
+      { bind: [school, department, userId] }
     );
-    if (!r || r.length === 0) return res.status(404).json({ error: "Kullanıcı bulunamadı" });
-    res.json({ message: "Eğitim bilgisi güncellendi", user: r[0][0] }); // r[0][0] contains the actual row data
+    if (!rows || rows.length === 0) return res.status(404).json({ error: "Kullanıcı bulunamadı" });
+    return res.json({ message: "Eğitim bilgisi güncellendi", user: rows[0] });
   } catch (err) {
     console.error("🚨 /education PATCH hatası:", err.message);
-    res.status(500).json({ error: "Eğitim bilgisi güncellenemedi" });
+    return res.status(500).json({ error: "Eğitim bilgisi güncellenemedi" });
   }
 });
 
@@ -242,15 +250,17 @@ router.get("/:id/education-list", verifyToken, async (req, res) => {
   if (req.user.userId !== userId) return res.status(403).json({ error: "Erişim reddedildi" });
 
   try {
-    const q = `SELECT id, school, department, created_at
-                 FROM public.user_education
-                WHERE user_id = $1
-             ORDER BY created_at DESC, id DESC`;
-    const [rows] = await db.sequelize.query(q, { bind: [userId], type: db.sequelize.QueryTypes.SELECT }); // Düzeltildi: type eklendi
-    res.json({ entries: rows }); // rows is already an array of objects
+    const rows = await db.sequelize.query(
+      `SELECT id, school, department, created_at
+         FROM public.user_education
+        WHERE user_id = $1
+        ORDER BY created_at DESC, id DESC`,
+      { bind: [userId], type: QueryTypes.SELECT }
+    );
+    return res.json({ entries: rows });
   } catch (err) {
     console.error("🚨 education-list GET hatası:", err);
-    res.status(500).json({ error: "Eğitim bilgileri alınamadı" });
+    return res.status(500).json({ error: "Eğitim bilgileri alınamadı" });
   }
 });
 
@@ -265,9 +275,12 @@ router.put("/:id/education-list", verifyToken, async (req, res) => {
     .map(e => ({ school: String(e.school || "").trim(), department: String(e.department || "").trim() }))
     .filter(e => e.school && e.department);
 
-  const t = await db.sequelize.transaction(); // Sequelize transaction
+  const t = await db.sequelize.transaction();
   try {
-    await db.sequelize.query(`DELETE FROM public.user_education WHERE user_id = $1`, { bind: [userId], transaction: t, type: db.sequelize.QueryTypes.DELETE }); // Düzeltildi: type eklendi
+    await db.sequelize.query(
+      `DELETE FROM public.user_education WHERE user_id = $1`,
+      { bind: [userId], transaction: t }
+    );
 
     for (const e of clean) {
       await db.sequelize.query(
@@ -276,20 +289,20 @@ router.put("/:id/education-list", verifyToken, async (req, res) => {
       );
     }
 
-    await t.commit(); // Commit the transaction
+    await t.commit();
 
-    const [r] = await db.sequelize.query( // Sequelize query returns [results, metadata]
+    const rows = await db.sequelize.query(
       `SELECT id, school, department, created_at
          FROM public.user_education
         WHERE user_id = $1
         ORDER BY created_at DESC, id DESC`,
-      { bind: [userId], type: db.sequelize.QueryTypes.SELECT } // Düzeltildi: type eklendi
+      { bind: [userId], type: QueryTypes.SELECT }
     );
-    res.json({ message: "Eğitim bilgileri kaydedildi", entries: r }); // r is already an array of objects
+    return res.json({ message: "Eğitim bilgileri kaydedildi", entries: rows });
   } catch (err) {
-    await t.rollback(); // Rollback the transaction
+    await t.rollback();
     console.error("🚨 education-list PUT hatası:", err);
-    res.status(500).json({ error: "Eğitim bilgileri kaydedilemedi" });
+    return res.status(500).json({ error: "Eğitim bilgileri kaydedilemedi" });
   }
 });
 
@@ -301,16 +314,22 @@ router.patch("/:id/watched", verifyToken, async (req, res) => {
   if (req.user.userId !== userId) return res.status(403).json({ error: "Erişim reddedildi" });
 
   try {
-    const [r] = await db.sequelize.query(`SELECT watched_videos FROM public.users WHERE id = $1`, { bind: [userId], type: db.sequelize.QueryTypes.SELECT }); // Düzeltildi: type eklendi
-    const current = Array.isArray(r[0]?.watched_videos) ? r[0].watched_videos : []; // r[0] is the actual row data
+    const rows = await db.sequelize.query(
+      `SELECT watched_videos FROM public.users WHERE id = $1`,
+      { bind: [userId], type: QueryTypes.SELECT }
+    );
+    const current = Array.isArray(rows[0]?.watched_videos) ? rows[0].watched_videos : [];
     if (current.includes(vidId)) return res.json({ watchedVideos: current });
 
     const updated = [...current, vidId];
-    await db.sequelize.query(`UPDATE public.users SET watched_videos = $1 WHERE id = $2`, { bind: [updated, userId], type: db.sequelize.QueryTypes.UPDATE }); // Düzeltildi: type eklendi
-    res.json({ watchedVideos: updated });
+    await db.sequelize.query(
+      `UPDATE public.users SET watched_videos = $1 WHERE id = $2`,
+      { bind: [updated, userId] }
+    );
+    return res.json({ watchedVideos: updated });
   } catch (err) {
     console.error("🚨 İzlenen video güncelleme hatası:", err);
-    res.status(500).json({ error: "Güncellenemedi" });
+    return res.status(500).json({ error: "Güncellenemedi" });
   }
 });
 
@@ -321,47 +340,46 @@ router.post("/:id/watched", verifyToken, async (req, res) => {
   if (!Number.isFinite(vidId)) return res.status(400).json({ error: "videoId gerekli" });
   if (req.user.userId !== userId) return res.status(403).json({ error: "Erişim reddedildi" });
 
-  const t = await db.sequelize.transaction(); // Sequelize transaction
+  const t = await db.sequelize.transaction();
   try {
-
-    const [cur] = await db.sequelize.query( // Sequelize query returns [results, metadata]
+    const rows = await db.sequelize.query(
       `SELECT watched_videos FROM public.users WHERE id = $1 FOR UPDATE`,
-      { bind: [userId], transaction: t, type: db.sequelize.QueryTypes.SELECT } // Düzeltildi: type eklendi
+      { bind: [userId], transaction: t, type: QueryTypes.SELECT }
     );
-
-    if (!cur || cur.length === 0) {
-      await t.rollback(); // Rollback the transaction
+    if (rows.length === 0) {
+      await t.rollback();
       return res.status(404).json({ error: "Kullanıcı bulunamadı" });
     }
-    const arr = Array.isArray(cur[0].watched_videos) ? cur[0].watched_videos : []; // cur[0] is the actual row data
+
+    const arr = Array.isArray(rows[0].watched_videos) ? rows[0].watched_videos : [];
     if (!arr.includes(vidId)) {
       await db.sequelize.query(
-        `UPDATE public.users SET watched_videos = $1 WHERE id = $2`, // Düzeltildi: type eklendi
-        [[...arr, vidId], userId]
+        `UPDATE public.users SET watched_videos = $1 WHERE id = $2`,
+        { bind: [[...arr, vidId], userId], transaction: t }
       );
     }
 
-    await db.sequelize.query( // Use db.sequelize.query for INSERT
+    await db.sequelize.query(
       `INSERT INTO public.user_video_views (user_id, video_id)
        VALUES ($1, $2)
        ON CONFLICT (user_id, video_id) DO NOTHING`,
-      { bind: [userId, vidId], transaction: t, type: db.sequelize.QueryTypes.INSERT } // Düzeltildi: type eklendi
+      { bind: [userId, vidId], transaction: t }
     );
 
-    await t.commit(); // Commit the transaction
+    await t.commit();
 
-    const [out] = await db.sequelize.query( // Sequelize query returns [results, metadata]
+    const rows2 = await db.sequelize.query(
       `SELECT watched_videos FROM public.users WHERE id = $1`,
-      { bind: [userId], type: db.sequelize.QueryTypes.SELECT } // Düzeltildi: type eklendi
+      { bind: [userId], type: QueryTypes.SELECT }
     );
     return res.status(201).json({
       message: "İzleme bilgisi kaydedildi",
-      watchedVideos: Array.isArray(out[0]?.watched_videos) ? out[0].watched_videos : [] // out[0] is the actual row data
+      watchedVideos: Array.isArray(rows2[0]?.watched_videos) ? rows2[0].watched_videos : []
     });
   } catch (err) {
-    await t.rollback(); // Rollback the transaction
+    await t.rollback();
     console.error("🚨 İzleme kaydı hatası:", err);
-    res.status(500).json({ error: "Kayıt başarısız" });
+    return res.status(500).json({ error: "Kayıt başarısız" });
   }
 });
 
@@ -370,12 +388,15 @@ router.get("/:id/watched", verifyToken, async (req, res) => {
   if (req.user.userId !== userId) return res.status(403).json({ error: "Erişim reddedildi" });
 
   try {
-    const [r] = await db.sequelize.query(`SELECT watched_videos FROM public.users WHERE id = $1`, { bind: [userId], type: db.sequelize.QueryTypes.SELECT }); // Düzeltildi: type eklendi
-    if (!r || r.length === 0) return res.status(404).json({ error: "Kullanıcı bulunamadı" });
-    res.json({ watchedVideos: Array.isArray(r[0].watched_videos) ? r[0].watched_videos : [] }); // r[0] is the actual row data
+    const rows = await db.sequelize.query(
+      `SELECT watched_videos FROM public.users WHERE id = $1`,
+      { bind: [userId], type: QueryTypes.SELECT }
+    );
+    if (rows.length === 0) return res.status(404).json({ error: "Kullanıcı bulunamadı" });
+    return res.json({ watchedVideos: Array.isArray(rows[0].watched_videos) ? rows[0].watched_videos : [] });
   } catch (err) {
     console.error("🚨 İzlenen videoları alırken hata:", err);
-    res.status(500).json({ error: "İzlenen videolar alınamadı" });
+    return res.status(500).json({ error: "İzlenen videolar alınamadı" });
   }
 });
 
@@ -384,17 +405,18 @@ router.get("/:id/watched-videos", verifyToken, async (req, res) => {
   if (req.user.userId !== userId) return res.status(403).json({ error: "Erişim reddedildi" });
 
   try {
-    const [r] = await db.sequelize.query(
+    const rows = await db.sequelize.query(
       `SELECT v.id, v.title, v.url, v.description
          FROM public.user_video_views uv
          JOIN public.videos v ON uv.video_id = v.id
-        WHERE uv.user_id = $1 ORDER BY uv.watched_at DESC`,
-      { bind: [userId], type: db.sequelize.QueryTypes.SELECT } // Düzeltildi: type eklendi
+        WHERE uv.user_id = $1
+     ORDER BY uv.watched_at DESC`,
+      { bind: [userId], type: QueryTypes.SELECT }
     );
-    res.json({ watchedVideos: r });
+    return res.json({ watchedVideos: rows });
   } catch (err) {
     console.error("🚨 İzlenen videoları getirirken hata:", err);
-    res.status(500).json({ error: "Veri alınamadı" });
+    return res.status(500).json({ error: "Veri alınamadı" });
   }
 });
 
@@ -404,12 +426,15 @@ router.get("/:id/work-area", verifyToken, async (req, res) => {
   if (req.user.userId !== userId) return res.status(403).json({ error: "Erişim reddedildi" });
 
   try {
-    const [r] = await db.sequelize.query(`SELECT work_area FROM public.users WHERE id = $1`, { bind: [userId], type: db.sequelize.QueryTypes.SELECT }); // Düzeltildi: type eklendi
-    if (!r || r.length === 0) return res.status(404).json({ error: "Kullanıcı bulunamadı" });
-    res.json({ workArea: r[0].work_area }); // r[0] is the actual row data
+    const rows = await db.sequelize.query(
+      `SELECT work_area FROM public.users WHERE id = $1`,
+      { bind: [userId], type: QueryTypes.SELECT }
+    );
+    if (rows.length === 0) return res.status(404).json({ error: "Kullanıcı bulunamadı" });
+    return res.json({ workArea: rows[0].work_area });
   } catch (err) {
     console.error("🚨 workArea çekilirken hata:", err);
-    res.status(500).json({ error: "Work area alınamadı" });
+    return res.status(500).json({ error: "Work area alınamadı" });
   }
 });
 
@@ -419,17 +444,20 @@ router.get("/:id/trainings", verifyToken, async (req, res) => {
   if (req.user.userId !== userId) return res.status(403).json({ error: "Erişim reddedildi" });
 
   try {
-    const q = `
-      SELECT v.id, v.title, v.tags, COALESCE(MAX(er.score), NULL) AS score
-        FROM public.user_video_views uv
-        JOIN public.videos v ON uv.video_id = v.id
-        JOIN public.users  u ON u.id = uv.user_id
-        LEFT JOIN public.exam_results er
-               ON er.video_id = v.id
-              AND er."user" = u.full_name
-       WHERE uv.user_id = $1 GROUP BY v.id, v.title, v.tags ORDER BY MAX(uv.watched_at) DESC`;
-    const [rows] = await db.sequelize.query(q, { bind: [userId], type: db.sequelize.QueryTypes.SELECT }); // Düzeltildi: type eklendi
-    
+    const rows = await db.sequelize.query(
+      `SELECT v.id, v.title, v.tags, COALESCE(MAX(er.score), NULL) AS score
+         FROM public.user_video_views uv
+         JOIN public.videos v ON uv.video_id = v.id
+         JOIN public.users  u ON u.id = uv.user_id
+         LEFT JOIN public.exam_results er
+                ON er.video_id = v.id
+               AND er."user" = u.full_name
+        WHERE uv.user_id = $1
+     GROUP BY v.id, v.title, v.tags
+     ORDER BY MAX(uv.watched_at) DESC`,
+      { bind: [userId], type: QueryTypes.SELECT }
+    );
+
     const format = (tags) =>
       Array.isArray(tags)
         ? tags.map(String)
@@ -437,7 +465,7 @@ router.get("/:id/trainings", verifyToken, async (req, res) => {
         ? tags.replace(/[{}"\\]/g, "").split(",").map((t) => t.trim()).filter(Boolean)
         : [];
 
-    res.json({
+    return res.json({
       trainings: rows.map((r) => ({
         id: r.id,
         title: r.title,
@@ -447,7 +475,7 @@ router.get("/:id/trainings", verifyToken, async (req, res) => {
     });
   } catch (err) {
     console.error("🚨 /:id/trainings hatası:", err);
-    res.status(500).json({ error: "Eğitimler getirilemedi" });
+    return res.status(500).json({ error: "Eğitimler getirilemedi" });
   }
 });
 
