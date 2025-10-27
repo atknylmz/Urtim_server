@@ -1,27 +1,30 @@
+// c:\Users\atakan.yilmaz\Desktop\Urtim_server\middleware\auth.js
 import jwt from 'jsonwebtoken';
+import config from '../config.js'; // JWT_SECRET'ı config dosyasından alıyoruz
 
-const { JWT_SECRET } = process.env;
-if (!JWT_SECRET) {
-  console.error("Missing JWT_SECRET environment variable. Please set it in your .env file.");
-  // In a real application, you might want to exit or handle this more gracefully.
-  // For now, we'll throw an error to make it clear.
-  throw new Error("Missing JWT_SECRET env");
-}
+const { JWT_SECRET } = config;
 
 export const verifyToken = (req, res, next) => {
   const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ error: "Yetkilendirme başlığı eksik veya hatalı" });
+
+  if (!authHeader) {
+    return res.status(401).json({ error: "Yetkilendirme token'ı bulunamadı." });
   }
 
-  const token = authHeader.split(' ')[1];
+  const token = authHeader.split(' ')[1]; // "Bearer TOKEN_STRING" formatından token'ı al
+
+  if (!token) {
+    return res.status(401).json({ error: "Yetkilendirme token'ı geçersiz formatta." });
+  }
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
-    req.user = decoded; // Attach user payload to request
-    next();
+    req.user = jwt.verify(token, JWT_SECRET); // Token'ı doğrula ve çözümlenen veriyi req.user'a ata
+    next(); // Doğrulama başarılı, bir sonraki middleware'e geç
   } catch (err) {
-    console.error("Token doğrulama hatası:", err);
-    return res.status(403).json({ error: "Geçersiz veya süresi dolmuş token" });
+    // Token geçersizse veya süresi dolmuşsa JSON hata döndür
+    if (err.name === 'TokenExpiredError') {
+      return res.status(401).json({ error: "Yetkilendirme token'ı süresi dolmuş." });
+    }
+    return res.status(403).json({ error: "Yetkilendirme token'ı geçersiz." });
   }
 };
