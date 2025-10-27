@@ -2,17 +2,24 @@
 import axios from "axios";
 
 /**
- * BASE URL seçimi:
- * 1) VITE_API_URL varsa onu kullan (örn: https://api.urtimakademi.com/api)
- * 2) Yoksa VITE_API_BASE + '/api' (örn: https://api.urtimakademi.com)
- * 3) Yoksa aynı origin + '/api' (dev için)
+ * BASE URL seçimi (öncelik sırası):
+ * 1) VITE_API_URL (örn: https://api.urtimakademi.com/api)
+ * 2) (opsiyonel) VITE_API_BASE + '/api'
+ * 3) PROD ortamında zorunlu varsayılan: https://api.urtimakademi.com/api
+ * 4) DEV'de aynı origin + '/api'
  */
 const clean = (s) => String(s || "").replace(/\/+$/, "");
-const API_URL =
-  clean(import.meta.env.VITE_API_URL) ||
-  (import.meta.env.VITE_API_BASE ? `${clean(import.meta.env.VITE_API_BASE)}/api` : `${clean(location.origin)}/api`);
+const DEF_PROD_API = "https://api.urtimakademi.com/api";
 
-// Token anahtar(lar)ı—uyumluluk için birkaç isim deniyoruz
+const envApiUrl   = clean(import.meta.env?.VITE_API_URL);
+const envApiBase  = clean(import.meta.env?.VITE_API_BASE);
+const isProd      = !!import.meta.env?.PROD;
+
+const API_URL =
+  envApiUrl ||
+  (envApiBase ? `${envApiBase}/api` :
+   (isProd ? DEF_PROD_API : `${clean(location.origin)}/api`));
+
 const TOKEN_KEYS = ["token", "authToken", "access_token"];
 
 const getToken = () => {
@@ -24,7 +31,6 @@ const getToken = () => {
 };
 
 export const setAuthToken = (t, { persist = "local" } = {}) => {
-  // persist: 'local' | 'session'
   for (const k of TOKEN_KEYS) {
     localStorage.removeItem(k);
     sessionStorage.removeItem(k);
@@ -39,21 +45,19 @@ export const clearAuth = () => {
   }
 };
 
+// Tek yerden axios instance
 export const api = axios.create({
   baseURL: API_URL,
   timeout: 30_000,
-  withCredentials: true, // cookie tabanlı auth kullanmıyorsan şart değil ama dursun
-  headers: {
-    Accept: "application/json",
-  },
+  withCredentials: true,
+  headers: { Accept: "application/json" },
 });
 
-// İstek interceptor: Token ekle
+// İstek: auth header
 api.interceptors.request.use((config) => {
   const t = getToken();
   if (t) {
     config.headers = config.headers || {};
-    // Eğer zaten header set ettiysen üzerine yazmaz
     if (!config.headers.Authorization) {
       config.headers.Authorization = `Bearer ${t}`;
     }
@@ -61,73 +65,70 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
-// Hata normalize edici
-function normalizeError(err) {
-  if (err.response) {
-    return {
-      status: err.response.status,
-      data: err.response.data,
-      message:
-        err.response.data?.error ||
-        err.response.data?.message ||
-        `İstek ${err.response.status} ile başarısız`,
-    };
-  }
-  if (err.request) {
-    return { status: 0, message: "Sunucuya ulaşılamadı", data: null };
-  }
-  return { status: 0, message: err.message || "Bilinmeyen hata", data: null };
-}
-
-// Yanıt interceptor: 401/403 yakala
+// Yanıt: JSON bekleme garantisi (HTML geldiyse erken patlat)
+function asClip(s, n = 200) { return (s ?? "").toString().slice(0, n); }
 api.interceptors.response.use(
-  (res) => res,
-  (err) => {
-    const n = normalizeError(err);
-    if (n.status === 401 || n.status === 403) {
-      // İstersen bu bloğu kapatabilirsin
-      clearAuth();
-      // login rotan farklıysa değiştir
-      if (!location.pathname.includes("/login")) {
-        location.href = "/login";
-      }
+  (res) => {
+    const ct = (res.headers?.["content-type"] || "").toLowerCase();
+    if (!ct.includes("application/json")) {
+      const snippet = typeof res.data === "string" ? asClip(res.data, 200) : "";
+      const err = new Error(
+        `JSON bekleniyordu ama geldi: ${ct || "bilinmiyor"} | örnek: ${snippet}`
+      );
+      err.status = res.status;
+      err.data = res.data;
+      return Promise.reject(err);
     }
-    return Promise.reject(n);
+    return res;
+  },
+  (err) => {
+    // Axios hatasını normalize et
+    if (err.response) {
+      const data = err.response.data;
+      const n = {
+        status: err.response.status,
+        data,
+        message:
+          data?.error || data?.message || `İstek ${err.response.status} ile başarısız`,
+      };
+      if (n.status === 401 || n.status === 403) {
+        clearAuth();
+        if (!location.pathname.includes("/login")) location.href = "/login";
+      }
+      return Promise.reject(n);
+    }
+    if (err.request) {
+      return Promise.reject({ status: 0, message: "Sunucuya ulaşılamadı", data: null });
+    }
+    return Promise.reject({ status: 0, message: err.message || "Bilinmeyen hata", data: null });
   }
 );
 
-// --------- Sık kullanılan yardımcılar ---------
+// ---- Yardımcılar (yol birleştirme güvenli) ----
+const lead = (p) => (String(p || "").startsWith("/") ? p : `/${p}`);
 
-// JSON POST
-export const postJson = (url, body, config) =>
-  api.post(url, body, { headers: { "Content-Type": "application/json" }, ...config });
+export const getJson   = (url, config) => api.get(lead(url), config);
+export const del       = (url, config) => api.delete(lead(url), config);
+export const postJson  = (url, body, config) =>
+  api.post(lead(url), body, { headers: { "Content-Type": "application/json" }, ...config });
+export const putJson   = (url, body, config)  =>
+  api.put(lead(url),  body, { headers: { "Content-Type": "application/json" }, ...config });
+export const patchJson = (url, body, config)  =>
+  api.patch(lead(url), body, { headers: { "Content-Type": "application/json" }, ...config });
 
-// Form-data upload (progress destekli)
 export const uploadForm = (url, formData, { onProgress, ...config } = {}) =>
-  api.post(url, formData, {
+  api.post(lead(url), formData, {
     headers: { "Content-Type": "multipart/form-data" },
     onUploadProgress: onProgress
       ? (evt) => {
-        const total = evt.total ?? evt.target?.getResponseHeader?.("Content-Length");
-        if (total) onProgress(Math.round((evt.loaded / total) * 100));
-      }
+          const total = evt.total ?? evt.target?.getResponseHeader?.("Content-Length");
+          if (total) onProgress(Math.round((evt.loaded / total) * 100));
+        }
       : undefined,
     ...config,
   });
 
-// GET helper
-export const getJson = (url, config) => api.get(url, config);
-
-// DELETE helper
-export const del = (url, config) => api.delete(url, config);
-
-// PUT/PATCH helper
-export const putJson = (url, body, config) =>
-  api.put(url, body, { headers: { "Content-Type": "application/json" }, ...config });
-export const patchJson = (url, body, config) =>
-  api.patch(url, body, { headers: { "Content-Type": "application/json" }, ...config });
-
-// Debug etmek istersen:
-// console.log("[axios] baseURL =", API_URL);
+// Debug için aç/kapat:
+console.log("[axios] baseURL =", API_URL);
 
 export default api;
