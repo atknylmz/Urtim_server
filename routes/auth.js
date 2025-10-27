@@ -2,12 +2,16 @@
 import express from 'express';
 import jwt from 'jsonwebtoken';
 import db from '../models/index.js'; // Sequelize db instance
- 
-const router = express.Router(); // Router instance
-// en üstte:
+import { QueryTypes } from 'sequelize'; // ÖNEMLİ: SELECT dönüşünü doğru yorumlamak için
+
+const router = express.Router();
+
 const { JWT_SECRET, JWT_EXPIRES = '1d' } = process.env;
 if (!JWT_SECRET) throw new Error("Missing JWT_SECRET env");
 
+// Body parser'ın app seviyesinde aktif olduğundan emin ol:
+// app.use(express.json());
+// app.use(express.urlencoded({ extended: true }));
 
 router.post("/login", async (req, res) => {
   const { email, password, role } = req.body || {};
@@ -16,23 +20,35 @@ router.post("/login", async (req, res) => {
   }
 
   try {
-    const normalizedEmail = String(email).trim().toLowerCase(); // Normalize email
-    const [rows] = await db.sequelize.query( // Sequelize query returns [results, metadata]
-      `SELECT id, username, email, authority, full_name, role, work_area, password_plain
-         FROM public.users
-        WHERE LOWER(email) = $1
-        LIMIT 1`,
-      { bind: [normalizedEmail], type: db.sequelize.QueryTypes.SELECT }
-    ); // rows is already an array of objects
-    if (rows.length === 0) return res.status(404).json({ error: "Böyle bir kullanıcı bulunamadı" });
+    const normalizedEmail = String(email).trim().toLowerCase();
+
+    // NOT: QueryTypes.SELECT ile sonuç DOĞRUDAN satır dizisidir (metadata yok).
+    const rows = await db.sequelize.query(
+      `
+      SELECT id, username, email, authority, full_name, role, work_area, password_plain
+        FROM public.users
+       WHERE LOWER(email) = $1
+       LIMIT 1
+      `,
+      { bind: [normalizedEmail], type: QueryTypes.SELECT }
+    );
+
+    if (!rows || rows.length === 0) {
+      // Kullanıcı yoksa burada dön; ileride user.password_plain okunmaz.
+      return res.status(404).json({ error: "Böyle bir kullanıcı bulunamadı" });
+    }
 
     const user = rows[0];
 
-    // NOT: prod'da bcrypt kullanın (hashlenmemiş şifre test amaçlı).
-    if (user.password_plain !== password) {
+    // Test ortamında düz şifre karşılaştırması (prod'da bcrypt kullanın)
+    if (user.password_plain == null) {
+      return res.status(500).json({ error: "Kullanıcı şifre alanı eksik" });
+    }
+    if (String(user.password_plain) !== String(password)) {
       return res.status(401).json({ error: "Yanlış şifre" });
     }
 
+    // Rol/authority uyumu
     if (role === "admin" && user.authority !== "admin") {
       return res.status(403).json({ error: "Bu hesaba admin panel erişimi yetkisi verilmemiş" });
     }
@@ -40,10 +56,15 @@ router.post("/login", async (req, res) => {
       return res.status(403).json({ error: "Kullanıcı paneline giriş yetkiniz yok" });
     }
 
-    const payload = { userId: user.id, username: user.username, email: user.email, authority: user.authority };
+    const payload = {
+      userId: user.id,
+      username: user.username,
+      email: user.email,
+      authority: user.authority
+    };
     const token = jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES });
 
-    res.json({
+    return res.json({
       message: `${role === "admin" ? "Admin" : "Kullanıcı"} girişi başarılı`,
       token,
       user: {
@@ -57,7 +78,7 @@ router.post("/login", async (req, res) => {
     });
   } catch (e) {
     console.error("Login hatası:", e);
-    res.status(500).json({ error: "Sunucu hatası" });
+    return res.status(500).json({ error: "Sunucu hatası" });
   }
 });
 
