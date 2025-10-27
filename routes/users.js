@@ -2,7 +2,7 @@
 import express from 'express';
 import db from '../models/index.js';
 import { QueryTypes } from 'sequelize';
-import { verifyToken } from '../middleware/auth.js';
+import { verifyToken, verifyAdmin } from '../middleware/auth.js';
 
 const router = express.Router();
 
@@ -106,7 +106,7 @@ router.post("/", async (req, res) => {
 });
 
 /* ---------------- Kullanıcıları listele ---------------- */
-router.get("/", verifyToken, async (_req, res) => {
+router.get("/", verifyAdmin, async (_req, res) => {
   try {
     const rows = await db.sequelize.query(
       `SELECT id, full_name, role, work_area, authority, username, email, password_plain, tags, school, department
@@ -122,7 +122,7 @@ router.get("/", verifyToken, async (_req, res) => {
 });
 
 /* ---------------- Kullanıcı güncelle (PUT /:id) ---------------- */
-router.put("/:id", verifyToken, async (req, res) => {
+router.put("/:id", verifyAdmin, async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id)) return res.status(400).json({ error: "Geçersiz id" });
 
@@ -181,7 +181,7 @@ router.put("/:id", verifyToken, async (req, res) => {
 });
 
 /* ---------------- Kullanıcı sil (DELETE /:id veya /:username) ---------------- */
-router.delete("/:idOrUsername", verifyToken, async (req, res) => {
+router.delete("/:idOrUsername", verifyAdmin, async (req, res) => {
   try {
     const p = req.params.idOrUsername;
     const asNum = Number(p);
